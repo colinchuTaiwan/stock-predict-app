@@ -178,8 +178,8 @@ with st.sidebar:
     st.header("監控參數")
     st.write(f"當前監控檔數: {len(stock_list)}")
     st.write("預定排程:", SCHEDULE_TIMES)
-    if st.button("🚀 手動立即執行"):
-        st.session_state.last_run_min = "manual"
+    #if st.button("🚀 手動立即執行"):
+        #st.session_state.last_run_min = "manual"
 
 # 自動觸發檢查
 curr_min = datetime.now().strftime("%H:%M")
@@ -206,6 +206,6 @@ if not st.session_state.df_results.empty:
 else:
     st.info("目前尚未發現符合多頭排列訊號之股票。")
 
-# 自動刷新頁面 (每 30 秒)
-time.sleep(30)
+# 自動刷新頁面 (每 60 秒)
+time.sleep(60)
 st.rerun()
