@@ -111,11 +111,28 @@ c2.metric("最後更新時間", st.session_state.last_update)
 
 # 股票清單
 json_path = os.path.join('db', 'taiwan_full.json')
+
+st.write("📂 嘗試讀取:", json_path)
+st.write("📂 當前目錄:", os.getcwd())
+st.write("📂 目錄內容:", os.listdir("."))
+
 try:
     with open(json_path, 'r', encoding='utf-8') as f:
-        stock_list = json.load(f)['stocks']
-except:
-    stock_list = ["2330.TW","2303.TW","2454.TW"]
+        data = json.load(f)
+        
+        # 判斷格式
+        if isinstance(data, dict) and "stocks" in data:
+            stock_list = data["stocks"]
+        elif isinstance(data, list):
+            stock_list = data
+        else:
+            raise ValueError("JSON 格式錯誤")
+
+    st.success(f"✅ 成功載入股票數: {len(stock_list)}")
+
+except Exception as e:
+    st.error(f"❌ 讀取失敗: {e}")
+    stock_list = ["2330.TW", "2303.TW", "2454.TW"]
 
 # 側邊
 with st.sidebar:
