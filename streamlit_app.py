@@ -15,7 +15,7 @@ def get_cloud_data():
             return res.json()
     except: return None
 
-st.title("📊 台股多頭排列監控系統")
+st.title("📊 台股多頭排列定時系統")
 st.caption("數據由後端 GitHub Actions 定時自動掃描產生")
 
 data_json = get_cloud_data()
