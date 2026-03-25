@@ -4,8 +4,14 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from datetime import datetime
 import time
+from datetime import datetime, timedelta, timezone
+
+tz = timezone(timedelta(hours=8))
+
+def now_taipei():
+    return datetime.now(tz)
+
 
 # =============================
 # 1. 頁面配置與參數設定
@@ -13,7 +19,7 @@ import time
 st.set_page_config(page_title="台股多頭排列自動掃描", layout="wide")
 
 SCHEDULE_TIMES = [
-    "07:00", "09:20", "10:25", "11:20", "12:20", 
+    "07:00", "09:20", "10:30", "11:20", "12:20", 
     "13:20", "15:00", "18:00", "22:30", "23:30"
 ]
 
@@ -140,7 +146,7 @@ def run_scan_logic(stock_codes):
                     "漲幅%": RK_p,
                     "成交量": stock_cap,
                     "型態": res_type,
-                    "更新時間": datetime.now().strftime("%H:%M:%S")
+                    "更新時間": now_taipei().strftime("%H:%M:%S")
                 })
         except:
             continue
@@ -164,7 +170,7 @@ if "seen_keys" not in st.session_state:
 
 # 狀態顯示欄
 c1, c2 = st.columns(2)
-c1.metric("系統目前時間", datetime.now().strftime("%H:%M:%S"))
+c1.metric("系統目前時間", now_taipei().strftime("%H:%M:%S"))
 c2.metric("最後資料更新時間", st.session_state.last_update)
 
 # 讀取股號
@@ -186,7 +192,7 @@ with st.sidebar:
     #    st.session_state.last_run_min = "manual"
 
 # 自動觸發檢查
-curr_min = datetime.now().strftime("%H:%M")
+curr_min = now_taipei().strftime("%H:%M")
 should_trigger = (curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min)
 is_manual = (st.session_state.last_run_min == "manual")
 
@@ -212,7 +218,7 @@ if should_trigger or is_manual:
     else:
         st.session_state.df_results = new_results
     
-    st.session_state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
     st.rerun()
 
 # 顯示結果表格
