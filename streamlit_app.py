@@ -154,11 +154,20 @@ except:
     stock_list=["2330.TW","2303.TW","2454.TW"]
 
 # 4. 排程觸發檢查 (在 UI 渲染前先處理數據)
+# =============================
+# 4. 排程觸發檢查 (修正版)
+# =============================
 curr_min = now_taipei().strftime("%H:%M")
+
+# 檢查是否到達排程時間
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
+    # 1. 立即標記此分鐘已執行，防止重複觸發
     st.session_state.last_run_min = curr_min
+    
+    # 2. 執行掃描邏輯
     new_results = run_scan_logic(stock_list)
     
+    # 3. 處理結果
     if not new_results.empty:
         new_results["key"] = new_results["股票代號"] + "_" + new_results["型態"]
         filtered = new_results[~new_results["key"].isin(st.session_state.seen_keys)]
@@ -168,8 +177,14 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     else:
         st.session_state.df_results = pd.DataFrame()
     
+    # 4. 【關鍵】更新最後成功更新的時間字串
+    # 使用 H:M:S 格式方便觀察
     st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
-    st.rerun() # 掃描完立刻刷新以同步 UI
+    
+    # 5. 強制重刷，讓下方的 UI 能夠抓到剛更新完的 session_state
+    st.rerun()
+
+# --- 如果不在排程時間內，程式會直接往下跑 UI 介面 ---
 
 # 5. UI 介面繪製
 st.title("🚀 台股多頭排列定時掃描器")
