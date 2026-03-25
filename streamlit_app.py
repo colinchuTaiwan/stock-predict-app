@@ -1,261 +1,243 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import json
 import os
+from datetime import datetime
 import time
-import base64
-import requests
-
-from datetime import datetime, timedelta, timezone
 
 # =============================
-# 台北時間
+# 1. 頁面配置與參數設定
 # =============================
-tz = timezone(timedelta(hours=8))
-def now_taipei():
-    return datetime.now(tz)
+st.set_page_config(page_title="台股多頭排列自動掃描", layout="wide")
 
-# =============================
-# GitHub 設定
-# =============================
-GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
-GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
-GITHUB_FILE = st.secrets.get("GITHUB_FILE", "scan_cache.json")
+SCHEDULE_TIMES = [
+    "07:00", "09:20", "10:20", "11:20", "12:20", 
+    "13:20", "15:00", "18:00", "22:30", "23:30"
+]
 
 # =============================
-# GitHub 上傳
+# 2. 核心邏輯：指標計算與資料提取
 # =============================
-def upload_to_github(content_dict):
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return
 
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-
-    res = requests.get(url, headers=headers)
-    sha = res.json()["sha"] if res.status_code == 200 else None
-
-    content_str = json.dumps(content_dict, ensure_ascii=False, indent=2)
-    content_b64 = base64.b64encode(content_str.encode()).decode()
-
-    data = {
-        "message": f"update {now_taipei()}",
-        "content": content_b64,
-        "branch": "main"
-    }
-    if sha:
-        data["sha"] = sha
-
-    res = requests.put(url, headers=headers, json=data)
-    if res.status_code not in [200, 201]:
-        st.error(f"GitHub 上傳失敗: {res.text}")
-
-# =============================
-# cache
-# =============================
-CACHE_PATH = "scan_cache.json"
-
-def load_cache():
-    if os.path.exists(CACHE_PATH):
-        try:
-            with open(CACHE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未執行")
-        except:
-            pass
-    return pd.DataFrame(), "尚未執行"
-
-def save_cache(df, update_time):
-    data = {
-        "data": df.to_dict(orient="records"),
-        "last_update": update_time
-    }
-
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-    upload_to_github(data)
-
-# =============================
-# 技術指標
-# =============================
 def calc_indicators(df):
     df = df.copy()
     close = df['Close']
-
+    
+    # 計算各週期均線與斜率(diff)
     for w in [5, 10, 20, 60, 100, 200]:
         df[f"ma{w}"] = close.rolling(w).mean()
         df[f"ma{w}_d"] = df[f"ma{w}"].diff()
-
+    
+    # 計算前一筆均線（用於判斷突破）
     for w in [5, 10, 20, 60]:
         df[f"pre_ma{w}"] = df[f"ma{w}"].shift(1)
-
+    
     df["pre_close"] = df['Close'].shift(1)
     df["pre_high"] = df['High'].shift(1)
     df["pre_vol"] = df['Volume'].shift(1)
-
+    
+    # 量能與乖離
+    df["mv5"] = df['Volume'].rolling(5).mean() / 1000
     df["mv20"] = df['Volume'].rolling(20).mean() / 1000
-
+    
+    # 乖離率計算
     for w in [10, 20, 60, 100, 200]:
         df[f"ma{w}_b"] = (close - df[f"ma{w}"]) / df[f"ma{w}"]
-
+        
     df["RK_p"] = (close - df['Open']) * 100 / df['Open']
-
     return df
 
 def extract_latest(df, ind):
-    if len(df) < 3:
-        return None
-
-    d = ind.iloc[-1].to_dict()
-    d.update({
-        'price': df['Close'].iloc[-1],
-        'pre_close': df['Close'].iloc[-2],
-        'pre_high': df['High'].iloc[-2],
-        'vol': df['Volume'].iloc[-1] / 1000,
-        'pre_vol': df['Volume'].iloc[-2] / 1000,
-    })
+    if len(df) < 3: return None
+    last_3_days = df.tail(3)
+    d = {
+        'price':     last_3_days['Close'].iloc[-1],
+        'open':      last_3_days['Open'].iloc[-1],
+        'high':      last_3_days['High'].iloc[-1],
+        'vol':       last_3_days['Volume'].iloc[-1] / 1000,
+        'pre_close': last_3_days['Close'].iloc[-2],
+        'pre_high':  last_3_days['High'].iloc[-2],
+        'pre_vol':   last_3_days['Volume'].iloc[-2] / 1000,
+    }
+    if not ind.empty:
+        d.update(ind.iloc[-1].to_dict())
     return d
 
 # =============================
-# 分批
+# 3. 掃描核心
 # =============================
-def chunk_list(lst, size=100):
-    for i in range(0, len(lst), size):
-        yield lst[i:i+size]
 
-# =============================
-# 掃描
-# =============================
 def run_scan_logic(stock_codes):
-    st.write(f"下載 {len(stock_codes)} 檔資料中...")
-
+    st.write(f"正在下載 {len(stock_codes)} 檔股票數據...")
+    raw = yf.download(tickers=stock_codes, period="300d", group_by="ticker", auto_adjust=False, threads=True)
+    
     all_found = []
     pbar = st.progress(0)
 
-    chunks = list(chunk_list(stock_codes, 100))
+    for i, code in enumerate(stock_codes):
+        pbar.progress((i + 1) / len(stock_codes))
+        try:
+            df = raw[code].dropna() if len(stock_codes) > 1 else raw.dropna()
+            if len(df) < 200: continue
 
-    for i, chunk in enumerate(chunks):
-        raw = yf.download(
-            tickers=chunk,
-            period="300d",
-            group_by="ticker",
-            auto_adjust=False,
-            threads=True
-        )
+            ind = calc_indicators(df)
+            d = extract_latest(df, ind)
+            if not d: continue
 
-        for code in chunk:
-            try:
-                # 修正 single ticker bug
-                if isinstance(raw.columns, pd.MultiIndex):
-                    df = raw[code].dropna()
-                else:
-                    df = raw.dropna()
+            # 提取變數
+            price = round(d['price'], 2)
+            pre_high = round(d['pre_high'], 2)
+            pre_close = d['pre_close']
+            RK_p = round(d['RK_p'], 1)
+            stock_cap = int(d['vol'])
+            prev_cap = d['pre_vol']
+            mv20 = d['mv20']
+            
+            # 均線數值
+            ma = {w: d[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
+            ma_d = {w: d[f'ma{w}_d'] for w in [5, 10, 20, 60, 100, 200]}
+            pre_ma = {w: ind[f'ma{w}'].iloc[-2] for w in [5, 10, 20, 60]}
 
-                if len(df) < 200:
-                    continue
+            # --- 基本過濾條件 ---
+            if not (1 < RK_p < 7): continue
+            
+            cond_basic = (
+                price > pre_high and mv20 > 100 and stock_cap > 100 and
+                price > ma[20] and price > ma[60] and price > ma[100] and price > ma[200] and
+                all(v > 0 for v in ma_d.values()) and
+                stock_cap > prev_cap * 1.5
+            )
+            if not cond_basic: continue
 
-                ind = calc_indicators(df)
-                d = extract_latest(df, ind)
-                if not d:
-                    continue
+            is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
+            if not is_breakout: continue
 
-                price = round(d['price'], 2)
-                pre_high = round(d['pre_high'], 2)
-                pre_close = d['pre_close']
-                RK_p = round(d['RK_p'], 1)
-                stock_cap = int(d['vol'])
-                prev_cap = d['pre_vol']
-                mv20 = d['mv20']
-
-                ma = {w: d[f'ma{w}'] for w in [5,10,20,60,100,200]}
-                ma_d = {w: d[f'ma{w}_d'] for w in [5,10,20,60,100,200]}
-                pre_ma = {w: ind[f'ma{w}'].iloc[-2] for w in [5,10,20,60]}
-
-                if not (1 < RK_p < 7):
-                    continue
-
-                if not (
-                    price > pre_high and mv20 > 100 and stock_cap > 100 and
-                    price > ma[20] > ma[60] > ma[100] > ma[200] and
-                    all(v > 0 for v in ma_d.values()) and
-                    stock_cap > prev_cap * 1.5
-                ):
-                    continue
-
-                if not any(pre_close < pre_ma[w] for w in [5,10,20,60]):
-                    continue
-
-                res_type = ""
-
-                if (max(ma.values())/min(ma.values()) < 1.06) and \
-                   (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and d['ma200_b'] < 0.08:
-                    res_type = "六線多排"
-                elif (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100]):
-                    res_type = "五線多排"
-                elif (price > ma[5] > ma[10] > ma[20] > ma[60]):
-                    res_type = "四線多排"
-                elif (price > ma[5] > ma[10] > ma[20]):
-                    res_type = "三線多排"
-
-                if res_type:
-                    all_found.append({
-                        "股票代號": code,
-                        "價格": price,
-                        "漲幅%": RK_p,
-                        "成交量": stock_cap,
-                        "型態": res_type,
-                        "更新時間": now_taipei().strftime("%H:%M:%S")
-                    })
-
-            except Exception as e:
-                print(code, e)
-
-        pbar.progress((i+1)/len(chunks))
-
+            # --- 訊號分類判斷 ---
+            res_type = ""
+            # Signal 1: 六線
+            if (max(ma.values())/min(ma.values()) < 1.06) and \
+               (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and (d['ma200_b'] < 0.08):
+                res_type = "六線多排"
+            # Signal 2: 五線
+            elif (max(list(ma.values())[:-1])/min(list(ma.values())[:-1]) < 1.06) and \
+                 (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100]) and (d['ma100_b'] < 0.08):
+                res_type = "五線多排"
+            # Signal 3: 四線
+            elif (max(list(ma.values())[:4])/min(list(ma.values())[:4]) < 1.06) and \
+                 (price > ma[5] > ma[10] > ma[20] > ma[60]) and (d['ma60_b'] < 0.08):
+                res_type = "四線多排"
+            # Signal 4: 三線
+            elif (max(list(ma.values())[:3])/min(list(ma.values())[:3]) < 1.06) and \
+                 (price > ma[5] > ma[10] > ma[20]) and (d['ma20_b'] < 0.08):
+                res_type = "三線多排"
+            
+            if res_type:
+                all_found.append({
+                    "股票代號": code,
+                    "價格": price,
+                    "漲幅%": RK_p,
+                    "成交量": stock_cap,
+                    "型態": res_type,
+                    "更新時間": datetime.now().strftime("%H:%M:%S")
+                })
+        except:
+            continue
     return pd.DataFrame(all_found)
 
 # =============================
-# UI
+# 4. Streamlit UI 與 自動執行邏輯
 # =============================
-st.set_page_config(page_title="台股掃描", layout="wide")
-st.title("🚀 台股多頭排列掃描")
 
+st.title("🚀 台股多頭排列定時掃描器")
+
+# 初始化 Session State
 if "df_results" not in st.session_state:
-    df_cache, last_update = load_cache()
-    st.session_state.df_results = df_cache
-    st.session_state.last_update = last_update
+    st.session_state.df_results = pd.DataFrame()
+if "last_update" not in st.session_state:
+    st.session_state.last_update = "尚未執行"
+if "last_run_min" not in st.session_state:
     st.session_state.last_run_min = ""
+if "seen_keys" not in st.session_state:
+    st.session_state.seen_keys = set()
 
-# 時間
+# 狀態顯示欄
 c1, c2 = st.columns(2)
-c1.metric("台北時間", now_taipei().strftime("%H:%M:%S"))
-c2.metric("最後更新", st.session_state.last_update)
+c1.metric("系統目前時間", datetime.now().strftime("%H:%M:%S"))
+c2.metric("最後資料更新時間", st.session_state.last_update)
 
-# 股票清單
+# 讀取股號
+json_path = os.path.join('db', 'taiwan_full.json')
 try:
-    with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
-        stock_list = json.load(f)
-        if isinstance(stock_list, dict):
-            stock_list = stock_list["stocks"]
+    with open(json_path, 'r', encoding='utf-8') as f:
+        stock_list = json.load(f)['stocks']
 except:
-    stock_list = ["2330.TW"]
+    stock_list = ["2330.TW", "2303.TW", "2454.TW"] # 備用清單
 
-# 手動執行
-if st.button("🚀 手動掃描"):
-    new_df = run_scan_logic(stock_list)
-    now = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
+# 側邊欄控制
+with st.sidebar:
+    st.header("監控參數")
+    st.write(f"當前監控檔數: {len(stock_list)}")
+    st.write("預定排程:", SCHEDULE_TIMES)
+    if st.button("🔄 重置新訊號"):
+        st.session_state.seen_keys = set()
+    #if st.button("🚀 手動立即執行"):
+    #    st.session_state.last_run_min = "manual"
 
-    st.session_state.df_results = new_df
-    st.session_state.last_update = now
+# 自動觸發檢查
+curr_min = datetime.now().strftime("%H:%M")
+should_trigger = (curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min)
+is_manual = (st.session_state.last_run_min == "manual")
 
-    save_cache(new_df, now)
+if should_trigger or is_manual:
+    st.session_state.last_run_min = curr_min
+    
+    new_results = run_scan_logic(stock_list)
+
+    if not new_results.empty
+        # ⭐ 用「股票+型態」當key（專業版）
+        new_results["key"] = new_results["股票代號"] + "_" + new_results["型態"]
+
+        # 只保留新訊號
+        filtered = new_results[
+            ~new_results["key"].isin(st.session_state.seen_keys)
+        ]
+
+        # 更新已出現紀錄
+        st.session_state.seen_keys.update(new_results["key"].tolist())
+
+        # 移除key欄位（乾淨UI）
+        st.session_state.df_results = filtered.drop(columns=["key"])
+    else:
+        st.session_state.df_results = new_results
+    
+    st.session_state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.rerun()
 
-# 顯示
-st.subheader("📊 掃描結果")
+# 顯示結果表格
+st.subheader("📊 掃描結果清單")
+st.caption("只顯示本輪新出現訊號")
+
 if not st.session_state.df_results.empty:
-    st.dataframe(st.session_state.df_results, use_container_width=True)
+    tab1, tab2 = st.tabs(["所有結果", "依型態篩選"])
+
+    with tab1:
+        st.dataframe(st.session_state.df_results, use_container_width=True)
+
+    with tab2:
+        selected_type = st.selectbox(
+            "選擇型態",
+            st.session_state.df_results['型態'].unique()
+        )
+        st.table(
+            st.session_state.df_results[
+                st.session_state.df_results['型態'] == selected_type
+            ]
+        )
 else:
-    st.info("尚無結果")
+    st.info("目前沒有『新出現』的多頭排列股票")
+
+# 自動刷新頁面 (每 60 秒)
+time.sleep(60)
+st.rerun()
