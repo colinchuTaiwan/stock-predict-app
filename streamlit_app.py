@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -107,7 +106,6 @@ def run_scan_logic(stock_codes):
             is_breakout = any(d['pre_close']<pre_ma[w] for w in [5,10,20,60])
             if not is_breakout: continue
 
-            # 型態判斷
             res_type=""
             if max(ma.values())/min(ma.values())<1.06 and price>ma[5]>ma[10]>ma[20]>ma[60]>ma[100]>ma[200] and d['ma200_b']<0.08:
                 res_type="六線多排"
@@ -183,7 +181,6 @@ if should_trigger:
         filtered = new_results[~new_results["key"].isin(st.session_state.seen_keys)]
         st.session_state.seen_keys.update(new_results["key"].tolist())
         st.session_state.df_results = filtered.drop(columns=["key"])
-        # 存檔
         st.session_state.df_results.to_csv("db/results/latest_new_signals.csv", index=False, encoding="utf-8-sig")
     else:
         st.session_state.df_results = new_results
@@ -203,6 +200,6 @@ else:
     st.info("目前沒有『新出現』的多頭排列股票")
 
 # ----------------------------
-# 非阻塞自動刷新
+# 非阻塞秒級自動刷新
 # ----------------------------
-st.experimental_rerun(interval=60_000)  # 每 60 秒刷新一次
+st.experimental_rerun(interval=1000)  # 每秒刷新
