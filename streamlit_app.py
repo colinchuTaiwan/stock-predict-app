@@ -138,7 +138,11 @@ def run_scan_logic(stock_codes):
             elif (max(list(ma.values())[:3])/min(list(ma.values())[:3]) < 1.06) and \
                  (price > ma[5] > ma[10] > ma[20]) and (d['ma20_b'] < 0.08):
                 res_type = "三線多排"
-            
+            # Signal 5: 二線
+            elif (max(list(ma.values())[:2])/min(list(ma.values())[:2]) < 1.06) and \
+                 (price > ma[5] > ma[10]) and (d['ma10_b'] < 0.15):
+                res_type = "二線多排"
+                
             if res_type:
                 all_found.append({
                     "股票代號": code,
