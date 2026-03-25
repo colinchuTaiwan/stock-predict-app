@@ -30,7 +30,7 @@ def calc_indicators(df):
 def run_scan():
     # 載入清單 (請確保 GitHub 倉庫中有此檔案)
     try:
-        with open("db/taiwan_full.json","r",encoding="utf-8") as f:
+        with open("db/taiwan_Full.json","r",encoding="utf-8") as f:
             stock_list = json.load(f)['stocks']
     except:
         stock_list = ["2330.TW", "2454.TW", "2317.TW"]
