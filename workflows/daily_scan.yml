@@ -1,0 +1,31 @@
+name: Stock Auto Scanner
+
+on:
+  schedule:
+    # 注意：Cron 使用 UTC 時間 (台北 -8)
+    - cron: '10 1 * * 1-5'  # 台北 09:10
+    - cron: '13 1 * * 1-5'  # 台北 12:10
+    - cron: '20 5 * * 1-5'  # 台北 13:20
+    - cron: '0 12 * * 1-5'  # 台北 20:00
+  workflow_dispatch:        # 允許手動從 GitHub 網頁啟動
+
+jobs:
+  scanner_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出代碼
+        uses: actions/checkout@v3
+
+      - name: 設定 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 安裝必要套件
+        run: pip install yfinance pandas requests
+
+      - name: 執行掃描
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: python scanner.py
