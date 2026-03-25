@@ -57,22 +57,32 @@ def upload_to_github(content_dict, path=CACHE_FILE):
         return False
 
 def load_cache_from_github():
-    """從 GitHub API 讀取最新掃描快取 (繞過 raw 快取延遲)"""
-    if not GITHUB_TOKEN or not GITHUB_REPO: return pd.DataFrame(), "未知"
+    """從 GitHub API 讀取最新掃描快取，穩定版"""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return pd.DataFrame(), "未知"
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{CACHE_FILE}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+
     try:
-        # 使用 API 網址而非 raw 網址，可以拿到 100% 即時的資料
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{CACHE_FILE}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            # API 回傳的是 Base64 編碼的內容
-            content_b64 = res.json().get("content", "")
-            data = json.loads(base64.b64decode(content_b64).decode('utf-8'))
-            return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未更新")
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            print(f"GitHub 回傳非200: {res.status_code}")
+            return pd.DataFrame(), "讀取失敗"
+
+        json_res = res.json()
+        content_b64 = json_res.get("content", "")
+        if not content_b64:
+            return pd.DataFrame(), "空內容"
+
+        # 移除換行符號再解碼
+        content_b64 = content_b64.replace("\n", "")
+        data = json.loads(base64.b64decode(content_b64).decode('utf-8'))
+
+        return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未更新")
     except Exception as e:
-        print(f"Load failed: {e}")
-    return pd.DataFrame(), "讀取失敗"
+        print(f"讀取 GitHub 失敗: {e}")
+        return pd.DataFrame(), "讀取失敗"
 
 # ==============================
 # 2. 技術指標與掃描引擎
