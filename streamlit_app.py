@@ -126,11 +126,11 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:15", "10:30", "11:30", "12:30", "13:25", "14:30", "20:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:20", "20:00", "23:00"]
 
 # 載入代碼
 try:
-    with open("db/taiwan_full.json", "r", encoding="utf-8") as f:
+    with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
         stock_list = json.load(f)['stocks']
 except:
     stock_list = ["2330.TW", "2454.TW", "2317.TW"]
