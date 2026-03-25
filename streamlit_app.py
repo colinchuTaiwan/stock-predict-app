@@ -165,8 +165,10 @@ if last_files:
 
 # 狀態顯示欄
 c1, c2 = st.columns(2)
-c1.metric("系統目前時間", now_taipei().strftime("%H:%M:%S"))
-c2.metric("最後資料更新時間", st.session_state.last_update)
+c1_time = c1.empty()
+c2_time = c2.empty()
+c1_time.metric("系統目前時間", now_taipei().strftime("%H:%M:%S"))
+c2_time.metric("最後資料更新時間", st.session_state.last_update)
 
 # 讀取股號
 json_path = os.path.join('db', 'taiwan_full.json')
