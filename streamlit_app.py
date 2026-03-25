@@ -195,7 +195,7 @@ if should_trigger or is_manual:
     
     new_results = run_scan_logic(stock_list)
 
-    if not new_results.empty
+    if not new_results.empty:
         # ⭐ 用「股票+型態」當key（專業版）
         new_results["key"] = new_results["股票代號"] + "_" + new_results["型態"]
 
