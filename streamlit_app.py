@@ -146,7 +146,7 @@ if "seen_keys" not in st.session_state: st.session_state.seen_keys = set()
 
 # 3. 讀取清單與初始化紀錄
 os.makedirs("db/results", exist_ok=True)
-json_path = os.path.join('db','taiwan_full.json')
+json_path = os.path.join('db','taiwan_Full.json')
 try:
     with open(json_path,'r',encoding='utf-8') as f:
         stock_list = json.load(f)['stocks']
