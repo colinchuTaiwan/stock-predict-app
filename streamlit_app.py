@@ -6,15 +6,17 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-
-tz = timezone(timedelta(hours=8))
-
-def now_taipei():
-    return datetime.now(tz)
-
+import glob
 
 # =============================
-# 1. 頁面配置與參數設定
+# 0. 時區設定與工具函數
+# =============================
+tz = timezone(timedelta(hours=8))
+def now_taipei():  
+    return datetime.now(tz)
+
+# =============================
+# 1. 頁面配置與排程
 # =============================
 st.set_page_config(page_title="台股多頭排列自動掃描", layout="wide")
 
@@ -24,19 +26,15 @@ SCHEDULE_TIMES = [
 ]
 
 # =============================
-# 2. 核心邏輯：指標計算與資料提取
+# 2. 指標計算與資料處理
 # =============================
-
 def calc_indicators(df):
     df = df.copy()
     close = df['Close']
     
-    # 計算各週期均線與斜率(diff)
     for w in [5, 10, 20, 60, 100, 200]:
         df[f"ma{w}"] = close.rolling(w).mean()
         df[f"ma{w}_d"] = df[f"ma{w}"].diff()
-    
-    # 計算前一筆均線（用於判斷突破）
     for w in [5, 10, 20, 60]:
         df[f"pre_ma{w}"] = df[f"ma{w}"].shift(1)
     
@@ -44,11 +42,9 @@ def calc_indicators(df):
     df["pre_high"] = df['High'].shift(1)
     df["pre_vol"] = df['Volume'].shift(1)
     
-    # 量能與乖離
     df["mv5"] = df['Volume'].rolling(5).mean() / 1000
     df["mv20"] = df['Volume'].rolling(20).mean() / 1000
     
-    # 乖離率計算
     for w in [10, 20, 60, 100, 200]:
         df[f"ma{w}_b"] = (close - df[f"ma{w}"]) / df[f"ma{w}"]
         
@@ -74,7 +70,6 @@ def extract_latest(df, ind):
 # =============================
 # 3. 掃描核心
 # =============================
-
 def run_scan_logic(stock_codes):
     st.write(f"正在下載 {len(stock_codes)} 檔股票數據...")
     raw = yf.download(tickers=stock_codes, period="300d", group_by="ticker", auto_adjust=False, threads=True)
@@ -92,7 +87,6 @@ def run_scan_logic(stock_codes):
             d = extract_latest(df, ind)
             if not d: continue
 
-            # 提取變數
             price = round(d['price'], 2)
             pre_high = round(d['pre_high'], 2)
             pre_close = d['pre_close']
@@ -101,12 +95,10 @@ def run_scan_logic(stock_codes):
             prev_cap = d['pre_vol']
             mv20 = d['mv20']
             
-            # 均線數值
             ma = {w: d[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
             ma_d = {w: d[f'ma{w}_d'] for w in [5, 10, 20, 60, 100, 200]}
             pre_ma = {w: ind[f'ma{w}'].iloc[-2] for w in [5, 10, 20, 60]}
 
-            # --- 基本過濾條件 ---
             if not (1 < RK_p < 7): continue
             
             cond_basic = (
@@ -120,27 +112,16 @@ def run_scan_logic(stock_codes):
             is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
             if not is_breakout: continue
 
-            # --- 訊號分類判斷 ---
             res_type = ""
-            # Signal 1: 六線
-            if (max(ma.values())/min(ma.values()) < 1.06) and \
-               (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and (d['ma200_b'] < 0.08):
+            if (max(ma.values())/min(ma.values()) < 1.06) and (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and (d['ma200_b'] < 0.08):
                 res_type = "六線多排"
-            # Signal 2: 五線
-            elif (max(list(ma.values())[:-1])/min(list(ma.values())[:-1]) < 1.06) and \
-                 (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100]) and (d['ma100_b'] < 0.08):
+            elif (max(list(ma.values())[:-1])/min(list(ma.values())[:-1]) < 1.06) and (price > ma[5] > ma[10] > ma[20] > ma[60] > ma[100]) and (d['ma100_b'] < 0.08):
                 res_type = "五線多排"
-            # Signal 3: 四線
-            elif (max(list(ma.values())[:4])/min(list(ma.values())[:4]) < 1.06) and \
-                 (price > ma[5] > ma[10] > ma[20] > ma[60]) and (d['ma60_b'] < 0.08):
+            elif (max(list(ma.values())[:4])/min(list(ma.values())[:4]) < 1.06) and (price > ma[5] > ma[10] > ma[20] > ma[60]) and (d['ma60_b'] < 0.08):
                 res_type = "四線多排"
-            # Signal 4: 三線
-            elif (max(list(ma.values())[:3])/min(list(ma.values())[:3]) < 1.06) and \
-                 (price > ma[5] > ma[10] > ma[20]) and (d['ma20_b'] < 0.08):
+            elif (max(list(ma.values())[:3])/min(list(ma.values())[:3]) < 1.06) and (price > ma[5] > ma[10] > ma[20]) and (d['ma20_b'] < 0.08):
                 res_type = "三線多排"
-            # Signal 5: 二線
-            elif (max(list(ma.values())[:2])/min(list(ma.values())[:2]) < 1.06) and \
-                 (price > ma[5] > ma[10]) and (d['ma10_b'] < 0.15):
+            elif (max(list(ma.values())[:2])/min(list(ma.values())[:2]) < 1.06) and (price > ma[5] > ma[10]) and (d['ma10_b'] < 0.15):
                 res_type = "二線多排"
                 
             if res_type:
@@ -157,9 +138,8 @@ def run_scan_logic(stock_codes):
     return pd.DataFrame(all_found)
 
 # =============================
-# 4. Streamlit UI 與 自動執行邏輯
+# 4. Streamlit UI
 # =============================
-
 st.title("🚀 台股多頭排列定時掃描器")
 
 # 初始化 Session State
@@ -172,6 +152,13 @@ if "last_run_min" not in st.session_state:
 if "seen_keys" not in st.session_state:
     st.session_state.seen_keys = set()
 
+# 讀取最後一次存檔，初始化 seen_keys
+os.makedirs("db/results", exist_ok=True)
+last_files = sorted(glob.glob("db/results/latest_new_signals*.csv"))
+if last_files:
+    df_last = pd.read_csv(last_files[-1], encoding="utf-8-sig")
+    st.session_state.seen_keys.update(df_last["股票代號"] + "_" + df_last["型態"])
+
 # 狀態顯示欄
 c1, c2 = st.columns(2)
 c1.metric("系統目前時間", now_taipei().strftime("%H:%M:%S"))
@@ -183,7 +170,7 @@ try:
     with open(json_path, 'r', encoding='utf-8') as f:
         stock_list = json.load(f)['stocks']
 except:
-    stock_list = ["2330.TW", "2303.TW", "2454.TW"] # 備用清單
+    stock_list = ["2330.TW", "2303.TW", "2454.TW"]
 
 # 側邊欄控制
 with st.sidebar:
@@ -192,8 +179,6 @@ with st.sidebar:
     st.write("預定排程:", SCHEDULE_TIMES)
     if st.button("🔄 重置新訊號"):
         st.session_state.seen_keys = set()
-    #if st.button("🚀 手動立即執行"):
-    #    st.session_state.last_run_min = "manual"
 
 # 自動觸發檢查
 curr_min = now_taipei().strftime("%H:%M")
@@ -206,19 +191,13 @@ if should_trigger or is_manual:
     new_results = run_scan_logic(stock_list)
 
     if not new_results.empty:
-        # ⭐ 用「股票+型態」當key（專業版）
         new_results["key"] = new_results["股票代號"] + "_" + new_results["型態"]
-
-        # 只保留新訊號
-        filtered = new_results[
-            ~new_results["key"].isin(st.session_state.seen_keys)
-        ]
-
-        # 更新已出現紀錄
+        filtered = new_results[~new_results["key"].isin(st.session_state.seen_keys)]
         st.session_state.seen_keys.update(new_results["key"].tolist())
-
-        # 移除key欄位（乾淨UI）
         st.session_state.df_results = filtered.drop(columns=["key"])
+        
+        # ✅ 存檔最新新訊號
+        st.session_state.df_results.to_csv("db/results/latest_new_signals.csv", index=False, encoding="utf-8-sig")
     else:
         st.session_state.df_results = new_results
     
@@ -231,10 +210,8 @@ st.caption("只顯示本輪新出現訊號")
 
 if not st.session_state.df_results.empty:
     tab1, tab2 = st.tabs(["所有結果", "依型態篩選"])
-
     with tab1:
         st.dataframe(st.session_state.df_results, use_container_width=True)
-
     with tab2:
         selected_type = st.selectbox(
             "選擇型態",
