@@ -143,9 +143,13 @@ def run_scan_logic(stock_codes, batch_size=50):
 # =============================
 # 4. Streamlit UI 佈局
 # =============================
-st_autorefresh(interval=1000, key="sec_refresh")
 
-# 載入股票清單
+# --- 修改點 1: 放在標題之前，並確保 key 唯一且不變 ---
+st_autorefresh(interval=1000, key="data_refresh_timer") 
+
+st.title("🚀 台股多頭排列定時掃描器")
+
+# --- 修改點 2: 重新載入股號 (確保每次刷新都抓到最新的時間) ---
 json_path = os.path.join('db', 'taiwan_full.json')
 try:
     with open(json_path, 'r', encoding='utf-8') as f:
@@ -154,16 +158,20 @@ try:
 except:
     stock_list = ["2330.TW", "2303.TW", "2454.TW"]
 
-# 頂部狀態列
-st.title("🚀 台股多頭排列定時掃描器")
+# --- 修改點 3: 建立一個容器，並在裡面直接定義 columns ---
 time_placeholder = st.empty()
-with time_placeholder.container():
-    c1, c2, c3 = st.columns(3)
-    c1.metric("系統目前時間", now_taipei().strftime("%H:%M:%S"))
-    c2.metric("最後掃描任務", st.session_state.last_update)
-    c3.metric("監控總檔數", len(stock_list))
 
+with time_placeholder.container():
+    # 每次 autorefresh 觸發時，這段 code 都會重跑，抓取最新的 now_taipei()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("⏰ 系統目前時間", now_taipei().strftime("%H:%M:%S"))
+    c2.metric("📡 最後掃描任務", st.session_state.last_update)
+    c3.metric("📊 監控總檔數", len(stock_list))
+
+# --- 修改點 4: 狀態顯示區 ---
 status_placeholder = st.empty()
+
+# 側邊欄... (保持不變)
 
 # 側邊欄
 with st.sidebar:
