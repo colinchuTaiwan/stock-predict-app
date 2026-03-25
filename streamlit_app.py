@@ -207,11 +207,45 @@ else:
 
 with st.sidebar:
     st.header("⚙️ 控制面板")
-    if st.button("☁️ 手動同步雲端"):
-        df_cloud, time_cloud = load_cache_from_github()
-        st.session_state.df_results = df_cloud
-        st.session_state.last_update = time_cloud
+    
+    # --- 手動同步按鈕 ---
+    if st.button("☁️ 手動同步雲端", use_container_width=True):
+        with st.spinner("正在連線 GitHub..."):
+            df_cloud, time_cloud = load_cache_from_github()
+            
+            # 檢查是否真的讀取成功 (df_cloud 不應為空，且 time_cloud 不應是 "讀取失敗")
+            if time_cloud != "讀取失敗" and not df_cloud.empty:
+                st.session_state.df_results = df_cloud
+                st.session_state.last_update = time_cloud
+                st.toast("✅ 雲端同步成功！", icon="🎉")
+                time.sleep(1) # 給使用者看一眼彈窗的時間
+                st.rerun()
+            elif time_cloud != "讀取失敗" and df_cloud.empty:
+                st.warning("☁️ 雲端檔案存在，但目前沒有符合條件的股票訊號。")
+                st.session_state.last_update = time_cloud
+            else:
+                st.error("❌ 同步失敗：請檢查 GitHub Token 或 Repository 設定。")
+                st.toast("同步失敗，請檢查側邊欄錯誤訊息", icon="⚠️")
+
+    st.divider()
+    
+    # --- 顯示排程資訊 ---
+    st.subheader("📅 自動掃描排程")
+    st.caption("系統將在以下台北時間自動執行：")
+    # 將排程時間漂亮的顯示出來
+    st.code(", ".join(SCHEDULE_TIMES))
+    
+    st.divider()
+    
+    # --- 重置按鈕 ---
+    if st.button("🗑️ 清空本地快取紀錄", help="清空目前網頁看到的結果，但不影響雲端檔案"):
+        st.session_state.seen_keys = set()
+        st.session_state.df_results = pd.DataFrame()
+        st.session_state.last_update = "已清空"
+        st.toast("本地紀錄已清除")
         st.rerun()
+
+    
     
     st.write("📅 排程時間:", SCHEDULE_TIMES)
     st.caption("v3 版：穩定同步與自動避錯機制")
