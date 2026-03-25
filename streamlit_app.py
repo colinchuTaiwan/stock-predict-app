@@ -25,16 +25,21 @@ CACHE_PATH = "scan_cache.json"
 
 def upload_to_github(content_dict, path=CACHE_FILE):
     """通用 GitHub 上傳函數，支援路徑自動切換"""
-    if not GITHUB_TOKEN or not GITHUB_REPO: return
+    if not GITHUB_TOKEN or not GITHUB_REPO: return False
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
         
-        # 取得舊檔案 SHA (如果有)
+        # 1. 取得舊檔案 SHA
         res = requests.get(url, headers=headers, timeout=5)
         sha = res.json().get("sha") if res.status_code == 200 else None
         
+        # 2. 準備內容
         content_json = json.dumps(content_dict, ensure_ascii=False, indent=2)
+        # 確保使用 utf-8 編碼
         content_b64 = base64.b64encode(content_json.encode('utf-8')).decode('utf-8')
         
         data = {
@@ -44,6 +49,7 @@ def upload_to_github(content_dict, path=CACHE_FILE):
         }
         if sha: data["sha"] = sha
         
+        # 3. 寫入
         put_res = requests.put(url, headers=headers, json=data, timeout=10)
         return put_res.status_code in [200, 201]
     except Exception as e:
@@ -51,15 +57,21 @@ def upload_to_github(content_dict, path=CACHE_FILE):
         return False
 
 def load_cache_from_github():
-    """從 GitHub 讀取最新掃描快取"""
+    """從 GitHub API 讀取最新掃描快取 (繞過 raw 快取延遲)"""
     if not GITHUB_TOKEN or not GITHUB_REPO: return pd.DataFrame(), "未知"
     try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{CACHE_FILE}"
-        res = requests.get(url, timeout=5)
+        # 使用 API 網址而非 raw 網址，可以拿到 100% 即時的資料
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{CACHE_FILE}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            data = res.json()
+            # API 回傳的是 Base64 編碼的內容
+            content_b64 = res.json().get("content", "")
+            data = json.loads(base64.b64decode(content_b64).decode('utf-8'))
             return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未更新")
-    except: pass
+    except Exception as e:
+        print(f"Load failed: {e}")
     return pd.DataFrame(), "讀取失敗"
 
 # ==============================
