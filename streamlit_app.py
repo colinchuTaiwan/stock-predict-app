@@ -4,71 +4,130 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from datetime import datetime
 import time
+import base64
+import requests
+
+from datetime import datetime, timedelta, timezone
 
 # =============================
-# 1. 頁面配置與參數設定
+# 台北時間
 # =============================
-st.set_page_config(page_title="台股多頭排列自動掃描", layout="wide")
+tz = timezone(timedelta(hours=8))
+def now_taipei():
+    return datetime.now(tz)
+
+# =============================
+# GitHub 設定（從 secrets 讀）
+# =============================
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
+GITHUB_FILE = st.secrets.get("GITHUB_FILE", "scan_cache.json")
+
+# =============================
+# GitHub 上傳
+# =============================
+def upload_to_github(content_dict):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        print("GitHub 未設定")
+        return
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+    
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}"
+    }
+
+    # 先取得 SHA（如果檔案存在）
+    res = requests.get(url, headers=headers)
+    sha = None
+    if res.status_code == 200:
+        sha = res.json()["sha"]
+
+    content_str = json.dumps(content_dict, ensure_ascii=False, indent=2)
+    content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+
+    data = {
+        "message": f"update scan result {now_taipei().strftime('%Y-%m-%d %H:%M:%S')}",
+        "content": content_b64,
+        "branch": "main"
+    }
+
+    if sha:
+        data["sha"] = sha
+
+    requests.put(url, headers=headers, json=data)
+
+# =============================
+# 本地 cache
+# =============================
+CACHE_PATH = "scan_cache.json"
+
+def load_cache():
+    try:
+        if os.path.exists(CACHE_PATH):
+            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未執行")
+    except:
+        pass
+    return pd.DataFrame(), "尚未執行"
+
+def save_cache(df, update_time):
+    data = {
+        "data": df.to_dict(orient="records"),
+        "last_update": update_time
+    }
+
+    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # 🔥 同步到 GitHub
+    upload_to_github(data)
+
+# =============================
+# Streamlit UI
+# =============================
+st.set_page_config(page_title="台股多頭排列掃描", layout="wide")
 
 SCHEDULE_TIMES = [
-    "07:00", "09:20", "10:20", "11:20", "12:20", 
-    "13:20", "15:00", "18:00", "22:30", "23:30"
+    "07:00","09:20","10:20","11:20","12:20",
+    "13:20","15:00","18:00","22:30","23:30"
 ]
 
-# =============================
-# 2. 核心邏輯：指標計算與資料提取
-# =============================
+st.title("🚀 台股多頭排列掃描器 + GitHub雲端版")
 
-def calc_indicators(df):
-    df = df.copy()
-    close = df['Close']
-    
-    # 計算各週期均線與斜率(diff)
-    for w in [5, 10, 20, 60, 100, 200]:
-        df[f"ma{w}"] = close.rolling(w).mean()
-        df[f"ma{w}_d"] = df[f"ma{w}"].diff()
-    
-    # 計算前一筆均線（用於判斷突破）
-    for w in [5, 10, 20, 60]:
-        df[f"pre_ma{w}"] = df[f"ma{w}"].shift(1)
-    
-    df["pre_close"] = df['Close'].shift(1)
-    df["pre_high"] = df['High'].shift(1)
-    df["pre_vol"] = df['Volume'].shift(1)
-    
-    # 量能與乖離
-    df["mv5"] = df['Volume'].rolling(5).mean() / 1000
-    df["mv20"] = df['Volume'].rolling(20).mean() / 1000
-    
-    # 乖離率計算
-    for w in [10, 20, 60, 100, 200]:
-        df[f"ma{w}_b"] = (close - df[f"ma{w}"]) / df[f"ma{w}"]
-        
-    df["RK_p"] = (close - df['Open']) * 100 / df['Open']
-    return df
+# 初始化
+if "df_results" not in st.session_state:
+    df_cache, last_update_cache = load_cache()
+    st.session_state.df_results = df_cache
+    st.session_state.last_update = last_update_cache
+    st.session_state.last_run_min = ""
 
-def extract_latest(df, ind):
-    if len(df) < 3: return None
-    last_3_days = df.tail(3)
-    d = {
-        'price':     last_3_days['Close'].iloc[-1],
-        'open':      last_3_days['Open'].iloc[-1],
-        'high':      last_3_days['High'].iloc[-1],
-        'vol':       last_3_days['Volume'].iloc[-1] / 1000,
-        'pre_close': last_3_days['Close'].iloc[-2],
-        'pre_high':  last_3_days['High'].iloc[-2],
-        'pre_vol':   last_3_days['Volume'].iloc[-2] / 1000,
-    }
-    if not ind.empty:
-        d.update(ind.iloc[-1].to_dict())
-    return d
+# 顯示時間
+c1, c2 = st.columns(2)
+c1.metric("台北時間", now_taipei().strftime("%H:%M:%S"))
+c2.metric("最後更新時間", st.session_state.last_update)
+
+# 股票清單
+json_path = os.path.join('db', 'taiwan_full.json')
+try:
+    with open(json_path, 'r', encoding='utf-8') as f:
+        stock_list = json.load(f)['stocks']
+except:
+    stock_list = ["2330.TW","2303.TW","2454.TW"]
+
+# 側邊
+with st.sidebar:
+    st.header("監控")
+    st.write(f"股票數: {len(stock_list)}")
+    st.write("排程:", SCHEDULE_TIMES)
+    if st.button("🚀 手動執行"):
+        st.session_state.last_run_min = "manual"
 
 # =============================
-# 3. 掃描核心
+# 掃描邏輯（你原本）
 # =============================
-
 def run_scan_logic(stock_codes):
     st.write(f"正在下載 {len(stock_codes)} 檔股票數據...")
     raw = yf.download(tickers=stock_codes, period="300d", group_by="ticker", auto_adjust=False, threads=True)
@@ -140,72 +199,41 @@ def run_scan_logic(stock_codes):
                     "漲幅%": RK_p,
                     "成交量": stock_cap,
                     "型態": res_type,
-                    "更新時間": datetime.now().strftime("%H:%M:%S")
+                    "更新時間": now_taipei().strftime("%H:%M:%S")
                 })
         except:
             continue
     return pd.DataFrame(all_found)
 
+
 # =============================
-# 4. Streamlit UI 與 自動執行邏輯
+# 觸發
 # =============================
-
-st.title("🚀 台股多頭排列定時掃描器")
-
-# 初始化 Session State
-if "df_results" not in st.session_state:
-    st.session_state.df_results = pd.DataFrame()
-if "last_update" not in st.session_state:
-    st.session_state.last_update = "尚未執行"
-if "last_run_min" not in st.session_state:
-    st.session_state.last_run_min = ""
-
-# 狀態顯示欄
-c1, c2 = st.columns(2)
-c1.metric("系統目前時間", datetime.now().strftime("%H:%M:%S"))
-c2.metric("最後資料更新時間", st.session_state.last_update)
-
-# 讀取股號
-json_path = os.path.join('db', 'taiwan_full.json')
-try:
-    with open(json_path, 'r', encoding='utf-8') as f:
-        stock_list = json.load(f)['stocks']
-except:
-    stock_list = ["2330.TW", "2303.TW", "2454.TW"] # 備用清單
-
-# 側邊欄控制
-with st.sidebar:
-    st.header("監控參數")
-    st.write(f"當前監控檔數: {len(stock_list)}")
-    st.write("預定排程:", SCHEDULE_TIMES)
-    #if st.button("🚀 手動立即執行"):
-        #st.session_state.last_run_min = "manual"
-
-# 自動觸發檢查
-curr_min = datetime.now().strftime("%H:%M")
+curr_min = now_taipei().strftime("%H:%M")
 should_trigger = (curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min)
 is_manual = (st.session_state.last_run_min == "manual")
 
 if should_trigger or is_manual:
     st.session_state.last_run_min = curr_min
-    new_results = run_scan_logic(stock_list)
-    st.session_state.df_results = new_results
-    st.session_state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    new_df = run_scan_logic(stock_list)
+
+    update_time = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
+
+    st.session_state.df_results = new_df
+    st.session_state.last_update = update_time
+
+    save_cache(new_df, update_time)
+
     st.rerun()
 
-# 顯示結果表格
-st.subheader("📊 掃描結果清單")
+# 顯示
+st.subheader("📊 掃描結果")
 if not st.session_state.df_results.empty:
-    # 根據型態分頁顯示或統一顯示
-    tab1, tab2 = st.tabs(["所有結果", "依型態篩選"])
-    with tab1:
-        st.dataframe(st.session_state.df_results, use_container_width=True)
-    with tab2:
-        selected_type = st.selectbox("選擇型態", st.session_state.df_results['型態'].unique())
-        st.table(st.session_state.df_results[st.session_state.df_results['型態'] == selected_type])
+    st.dataframe(st.session_state.df_results, use_container_width=True)
 else:
-    st.info("目前尚未發現符合多頭排列訊號之股票。")
+    st.info("尚無結果")
 
-# 自動刷新頁面 (每 60 秒)
+# 自動刷新
 time.sleep(60)
 st.rerun()
