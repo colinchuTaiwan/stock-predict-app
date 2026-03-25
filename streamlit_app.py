@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import glob
 from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=1000, key="auto_refresh")  # 每秒刷新
 
 # =============================
 # 0. 時區設定與工具函數
@@ -26,8 +27,7 @@ SCHEDULE_TIMES = [
     "13:20", "15:00", "18:00", "22:30", "23:30"
 ]
 
-# 秒級自動刷新頁面
-st_autorefresh(interval=1000, key="auto_refresh")  # 每秒刷新
+
 
 # =============================
 # 2. 指標計算與資料處理
