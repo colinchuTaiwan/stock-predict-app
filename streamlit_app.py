@@ -140,7 +140,6 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         #st.write(stock_list)
         #st.sidebar.write(stock_list)
         with st.status(f"🚀 啟動全量掃描 ({total_stocks} 檔)...", expanded=True) as status:
-            time.sleep(6)
             all_found = []
             for i in range(0, total_stocks, batch_size):
                 time.sleep(6)
@@ -158,7 +157,6 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
                     st.session_state.df_results = pd.DataFrame(all_found)
                     status.write(f"✅ 發現：{', '.join([d['股票代號'] for d in chunk_results])}")
                     
-                time.sleep(6)
                 
             st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
             status.update(label="✅ 掃描完成！", state="complete")
