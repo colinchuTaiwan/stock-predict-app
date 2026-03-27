@@ -107,7 +107,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程與分批執行邏輯
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "19:15", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "19:18", "23:00"]
 
 # 載入股票名單
 try:
@@ -135,7 +135,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     else:
         # 2. 雲端沒資料，開始分批掃描
         st.session_state.df_results = pd.DataFrame() # 清空舊資料
-        batch_size = 50
+        batch_size = 20 #50,100不能下載,10可以
         total_stocks = len(stock_list)
         st.write(stock_list)
         st.sidebar.write(stock_list)
@@ -156,7 +156,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
                     st.session_state.df_results = pd.DataFrame(all_found)
                     status.write(f"✅ 發現：{', '.join([d['股票代號'] for d in chunk_results])}")
                     
-                time.sleep(5)
+                time.sleep(6)
                 
             st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
             status.update(label="✅ 掃描完成！", state="complete")
