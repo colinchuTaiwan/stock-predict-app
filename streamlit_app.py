@@ -108,21 +108,29 @@ def analyze_stock_logic(code, df):
         if not is_breakout: return None
 
         # F. 訊號分類
+
         signal = "None"
         ma_vals = [v for v in mas.values() if v > 0]
         ma_max, ma_min = max(ma_vals), min(ma_vals)
         tangle_ratio = round(ma_max / ma_min, 3)
+        
+        # 檢查是否站上所有關鍵中長線
         above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
 
         if tangle_ratio < 1.06 and above_all:
-            bias_200 = (price - mas["ma200"]) / mas["ma200"]
-            if bias_200 < 0.08: signal = "Signal 5: 六線糾結突破"
-            elif (price - mas["ma100"]) / mas["ma100"] < 0.08: signal = "Signal 6: 五線糾結突破"
+            # 💡 使用乖離率確保「還沒噴太遠」
+            b200 = (price - mas["ma200"]) / mas["ma200"]
+            b100 = (price - mas["ma100"]) / mas["ma100"]
+            
+            if b200 < 0.08: signal = "Signal 5: 六線糾結突破"
+            elif b100 < 0.08: signal = "Signal 6: 五線糾結突破"
             else: signal = "Signal 7: 多線糾結突破"
+            
         elif mas["ma5"] > mas["ma20"] > mas["ma60"] > mas["ma100"] > mas["ma200"]:
+            # 計算均線斜率向上數量
             slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
-            if slopes >= 5: signal = "Signal 1: 五線多排"
-            else: signal = "Signal 2: 趨勢多排"
+            if slopes >= 5: signal = "Signal 1: 五線多排強攻"
+            else: signal = "Signal 2: 趨勢多排轉強"
 
         if signal == "None": return None
 
