@@ -1,3 +1,12 @@
+'''
+這份 v9.8 Stable Engine 已經進入了「工業級」的範疇。你引入了幾個非常關鍵的架構升級，徹底解決了 Streamlit 這種非同步環境下的競態問題：
+
+1.原子化寫入 (Atomic Write)：透過 .tmp 檔案進行 os.replace，解決了「正在寫入 JSON 時網頁重新整理」導致檔案毀損的致命問題。
+
+2.掃描互斥鎖 (Scan Mutex)：使用 st.session_state.lock 確保同一個 Session 不會並發觸發兩個 yf.download 批次，這對 API 穩定性至關重要。
+
+3.多重回退解析 (Multi-pass Extraction)：針對 yfinance 混亂的 Dataframe 結構（xs, key-index, single-frame）做了三層保護，這是目前處理 yfinance 獲取數據最穩定的寫法。
+'''
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +18,6 @@ from streamlit_autorefresh import st_autorefresh
 # 0. 全域配置與穩定性層
 # ==============================
 STATE_FILE = "db/scan_results.json"
-
 tz = timezone(timedelta(hours=8))
 
 def now_taipei():
@@ -39,6 +47,7 @@ def load_persistence():
     return {"last_slot": "", "list": []}
 
 def save_persistence(last_slot, results):
+    """🔒 原子化寫入，防止 JSON 損壞"""
     try:
         os.makedirs("db", exist_ok=True)
         tmp = STATE_FILE + ".tmp"
@@ -47,99 +56,86 @@ def save_persistence(last_slot, results):
         os.replace(tmp, STATE_FILE)
     except: pass
 
-st_autorefresh(interval=5000, key="v10_3_heartbeat")
+# 5秒心跳自動重整
+st_autorefresh(interval=1000, key="v10_heartbeat")
 
 # ==============================
-# 1. 核心策略引擎 (v10.3 紅 K 強化邏輯)
+# 1. 核心策略引擎 (策略邏輯更新)
 # ==============================
-
-
-def calc_indicators(df):
-    """向量化計算指標，提升執行效率"""
-    df = df.copy()
-    c = df['Close']
-    for w in [5, 10, 20, 60, 100, 200]:
-        df[f"ma{w}"] = c.rolling(w).mean()
-        df[f"ma{w}_b"] = (c - df[f"ma{w}"]) / df[f"ma{w}"]
-    df["RK_p"] = (c - df['Open']) * 100 / df['Open']
-    return df
-
 def analyze_stock_logic(code, df):
     """
-    整合版策略引擎：
-    1. 使用測試成功的核心過濾條件
-    2. 保留 Signal 1-8 的詳細分類標籤
+    核心策略引擎：執行基礎過濾與 Signal 1-8 判定
     """
     try:
-        # A. 數據清洗與日期校驗
+        # A. 數據清洗與基本檢查
         df = df.dropna()
         if len(df) < 210: return None
         
-        # 確保是今天的資料 (避免抓到昨日舊數據)
-        if df.index[-1].date() < now_taipei().date():
-            return None
-
-        # B. 計算指標
-        ind = calc_indicators(df)
-        last = ind.iloc[-1]
-        prev = ind.iloc[-2]
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
         
-        p = round(last['Close'], 2)
-        rk = round(last['RK_p'], 1)  # 實體紅 K 漲幅
-        vol = int(last['Volume'] / 1000) # 轉為「張」
+        price = round(curr['Close'], 2)
+        open_ = round(curr['Open'], 2)
+        vol = int(curr['Volume'])
         
-        # 提取均線數據
-        ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
-        pre_ma = {w: prev[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
-        ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100, 200]}
+        pre_close = round(prev['Close'], 2)
+        pre_high = round(prev['High'], 2)
+        pre_vol = int(prev['Volume']) / 1000 
+        
+        # B. 均線與指標計算
+        ma_periods = [5, 10, 20, 60, 100, 200]
+        mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-1] for m in ma_periods}
+        pre_mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-2] for m in ma_periods}
+        mv20 = df['Volume'].rolling(20).mean().iloc[-1]
+        
+        # C. 漲幅與乖離
+        rk_p = round((price - open_) * 100 / open_, 1)
+        bias = {f"ma{m}_b": (price - mas[f"ma{m}"]) / mas[f"ma{m}"] for m in ma_periods}
+        
+        # D. 基礎門檻過濾 (1.5% < RK_p < 7.0%)
+        if not (1.5 < rk_p < 7.0): return None
+        
+        cond_basic = (
+            price > pre_high and price > mas['ma5'] and 
+            mv20 > 100 and vol > 100 and price < 200 and
+            vol > (pre_vol * 1.5)
+        )
+        if not cond_basic: return None
+        
+        # E. 突破確認 (昨日收盤需在任一短中均線之下)
+        is_breakout_trigger = any(pre_close < pre_mas[f"ma{m}"] for m in [5, 10, 20, 60])
+        if not is_breakout_trigger: return None
 
-        # ==========================================
-        # C. 核心過濾 (採用測試成功的條件)
-        # ==========================================
-        # 1. 實體紅K 1%~7% 
-        # 2. 現價 > 所有中長線 (20, 60, 100, 200)
-        # 3. 成交量 > 100 張
-        # ==========================================
-        if not (1 < rk < 7 and p > max(ma[20], ma[60], ma[100], ma[200]) and vol > 100):
-            return None
-
-        # ==========================================
-        # D. 訊號分類 (Signal 1-8)
-        # ==========================================
+        # F. 進階訊號判定 (Signal 1-8)
         signal = "None"
-        ma_l = [ma[5], ma[10], ma[20], ma[60], ma[100], ma[200]]
+        ma_vals = list(mas.values())
         
-        # 1. 糾結模式判定 (優先級高)
-        if (max(ma_l) / min(ma_l) < 1.08) and ma_b[200] < 0.12:
-            signal = "Signal 5: 六線糾結突破"
-        elif (max(ma_l[:5]) / min(ma_l[:5]) < 1.08) and ma_b[100] < 0.12:
-            signal = "Signal 6: 五線糾結突破"
-        elif (max(ma_l[:4]) / min(ma_l[:4]) < 1.08) and ma_b[60] < 0.12:
-            signal = "Signal 7: 四線糾結突破"
-        elif (max(ma_l[:3]) / min(ma_l[:3]) < 1.08) and ma_b[20] < 0.12:
-            signal = "Signal 8: 三線糾結突破"
+        # 1. 糾結模式判定
+        tangle_ratio = max(ma_vals) / min(ma_vals)
+        above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
+        
+        if tangle_ratio < 1.06 and above_all:
+            if bias['ma200_b'] < 0.1: signal = "Signal 5: 六線糾結突破"
+            elif bias['ma100_b'] < 0.1: signal = "Signal 6: 五線糾結突破"
+            elif bias['ma60_b'] < 0.1: signal = "Signal 7: 四線糾結突破"
+            else: signal = "Signal 8: 三線糾結突破"
             
-        # 2. 多頭排列模式 (若非糾結，則檢查排列)
-        elif ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
-            slopes = sum(1 for w in [5, 10, 20, 60, 100, 200] if ma[w] > pre_ma[w])
+        # 2. 多頭排列模式
+        elif mas['ma5'] > mas['ma20'] > mas['ma60'] > mas['ma100'] > mas['ma200']:
+            slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
             if slopes >= 5: signal = "Signal 1: 五線多排"
             elif slopes == 4: signal = "Signal 2: 四線多排"
-            else: signal = "Signal 3: 趨勢多排"
+            elif slopes == 3: signal = "Signal 3: 三線多排"
+            else: signal = "Signal 4: 二線多排"
 
         if signal == "None": return None
 
         return {
-            "股票代號": code,
-            "價格": p,
-            "漲幅%": rk,
-            "訊號": signal,
-            "成交量": vol,
+            "股票代號": code, "價格": price, "漲幅%": rk_p, 
+            "訊號": signal, "糾結度": round(tangle_ratio, 3), 
             "時間": now_taipei().strftime("%H:%M")
         }
-        
-    except Exception as e:
-        return None
-
+    except: return None
 
 # ==============================
 # 2. 狀態管理與排程監控
@@ -153,7 +149,7 @@ if "v10" not in st.session_state:
 
 v = st.session_state.v10
 now = now_taipei()
-SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "01:52"]
+SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "02:01"]
 
 # 🔒 穩定排程點判定
 current_slot_key = ""
@@ -181,7 +177,7 @@ if v["running"] and not st.session_state.lock:
         u_len = len(universe)
         if u_len > 0 and v["idx"] < u_len:
             if time.time() - st.session_state.yf_lock_time > 3.5:
-                batch = universe[v["idx"]: v["idx"] + 20]
+                batch = universe[v["idx"]: v["idx"] + 10]
                 raw = yf.download(batch, period="250d", group_by="ticker", threads=True, progress=False)
                 
                 for code in batch:
@@ -205,7 +201,7 @@ if v["running"] and not st.session_state.lock:
 # ==============================
 # 4. UI 視覺展示
 # ==============================
-st.title("🛡️ 多頭趨勢選股策略實驗室 v10.1")
+st.title("🛡️ 多頭趨勢選股策略實驗室 v10.0")
 
 # 顯示排程資訊與最後更新
 st.code("排程點: " + ", ".join(SCHEDULE))
