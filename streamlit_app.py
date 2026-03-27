@@ -127,7 +127,7 @@ def run_batch_logic(codes):
 # ==============================
 # 3. 狀態機與定時 Checkpoint
 # ==============================
-SCHEDULE_TIMES = ["09:00", "09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "20:00", "21:30", "22:56"]
+SCHEDULE_TIMES = ["09:00", "09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "20:00", "21:30", "22:58"]
 now_dt = now_taipei()
 
 # 🔥 修正：使用 datetime.combine 解決跨日與 1900-01-01 問題
@@ -198,4 +198,4 @@ c1, c2, c3 = st.columns(3)
 c1.metric("⏰ 台北時間", now_taipei().strftime("%H:%M:%S"))
 c2.metric("📡 引擎狀態", "🔥 掃描中" if st.session_state.is_scanning else "🟢 監聽中")
 c3.metric("📊 累計標的", len(st.session_state.df_results))
-st.dataframe(st.session_state.df_results, use_container_width=True, hide_index=True) 檢視程式碼並提出意見
+st.dataframe(st.session_state.df_results, use_container_width=True, hide_index=True) 
