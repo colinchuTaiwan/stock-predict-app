@@ -9,6 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 # 0. 全域配置與穩定性層
 # ==============================
 STATE_FILE = "db/scan_results.json"
+
 tz = timezone(timedelta(hours=8))
 
 def now_taipei():
@@ -46,104 +47,102 @@ def save_persistence(last_slot, results):
         os.replace(tmp, STATE_FILE)
     except: pass
 
-# 5秒心跳自動重整
-st_autorefresh(interval=5000, key="v10_4_heartbeat")
+st_autorefresh(interval=5000, key="v10_3_heartbeat")
 
 # ==============================
-# 1. 核心策略引擎 (v10.4 整合版)
+# 1. 核心策略引擎 (v10.3 紅 K 強化邏輯)
 # ==============================
+
+
+def calc_indicators(df):
+    """向量化計算指標，提升執行效率"""
+    df = df.copy()
+    c = df['Close']
+    for w in [5, 10, 20, 60, 100, 200]:
+        df[f"ma{w}"] = c.rolling(w).mean()
+        df[f"ma{w}_b"] = (c - df[f"ma{w}"]) / df[f"ma{w}"]
+    df["RK_p"] = (c - df['Open']) * 100 / df['Open']
+    return df
+
 def analyze_stock_logic(code, df):
+    """
+    整合版策略引擎：
+    1. 使用測試成功的核心過濾條件
+    2. 保留 Signal 1-8 的詳細分類標籤
+    """
     try:
-        # A. 數據清洗與時間效驗
+        # A. 數據清洗與日期校驗
         df = df.dropna()
         if len(df) < 210: return None
-
-        last_row = df.iloc[-1]
-        last_date = df.index[-1].date()
-        today_date = now_taipei().date()
-
-        # 🚩 修正時差問題：如果最後一筆不是今天，代表 Yahoo 數據還沒更新，不進行判定
-        if last_date < today_date:
-            return None 
-
-        curr = last_row
-        prev = df.iloc[-2] # 真正的昨收
-
-        # B. 數據提取
-        price = round(curr["Close"], 2)
-        open_ = round(curr["Open"], 2)
-        vol = int(curr["Volume"])
-        pre_close = round(prev["Close"], 2)
-        pre_high = round(prev["High"], 2)
-
-        # C. 指標計算 (MA Cache 優化)
-        ma_periods = [5, 10, 20, 60, 100, 200]
-        close_series = df["Close"]
-        ma_cache = {m: close_series.rolling(m).mean() for m in ma_periods}
-        mas = {f"ma{m}": ma_cache[m].iloc[-1] for m in ma_periods}
-        pre_mas = {f"ma{m}": ma_cache[m].iloc[-2] for m in ma_periods}
-
-        # D. 量能判定 (今日量 vs 20MA量)
-        mv20 = df["Volume"].rolling(20).mean().iloc[-1]
-        if mv20 <= 0: return None
-        vol_ratio = round(vol / mv20, 2)
-
-        # E. 漲幅與紅 K 判定 (1313 條款)
-        if open_ <= 0: return None
-        change_p = round((price - pre_close) * 100 / pre_close, 1)
-
-        # 必須是實體紅 K (收盤 > 開盤) 且 漲幅介於 1.5% ~ 8.0%
-        if price <= open_ or not (1.5 < change_p < 8.0):
+        
+        # 確保是今天的資料 (避免抓到昨日舊數據)
+        if df.index[-1].date() < now_taipei().date():
             return None
 
-        # F. 突破與基礎過濾
-        cond_basic = (
-            price > pre_high and       # 突破昨高
-            price > mas["ma5"] and     # 站上 5MA
-            vol_ratio > 1.2 and        # 量能增溫
-            price < 200                # 價格門檻
-        )
-        if not cond_basic: return None
+        # B. 計算指標
+        ind = calc_indicators(df)
+        last = ind.iloc[-1]
+        prev = ind.iloc[-2]
+        
+        p = round(last['Close'], 2)
+        rk = round(last['RK_p'], 1)  # 實體紅 K 漲幅
+        vol = int(last['Volume'] / 1000) # 轉為「張」
+        
+        # 提取均線數據
+        ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
+        pre_ma = {w: prev[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
+        ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100, 200]}
 
-        # G. 首日突破確認
-        is_breakout = any(pre_close < pre_mas[f"ma{m}"] for m in [5, 10, 20, 60])
-        if not is_breakout: return None
+        # ==========================================
+        # C. 核心過濾 (採用測試成功的條件)
+        # ==========================================
+        # 1. 實體紅K 1%~7% 
+        # 2. 現價 > 所有中長線 (20, 60, 100, 200)
+        # 3. 成交量 > 100 張
+        # ==========================================
+        if not (1 < rk < 7 and p > max(ma[20], ma[60], ma[100], ma[200]) and vol > 100):
+            return None
 
-        # H. 訊號分類判定
+        # ==========================================
+        # D. 訊號分類 (Signal 1-8)
+        # ==========================================
         signal = "None"
-        ma_vals = [v for v in mas.values() if v > 0]
-        ma_max, ma_min = max(ma_vals), min(ma_vals)
-        tangle_ratio = round(ma_max / ma_min, 3)
-        above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
-
-        if tangle_ratio < 1.06 and above_all:
-            # 糾結突破
-            b200 = (price - mas["ma200"]) / mas["ma200"]
-            b100 = (price - mas["ma100"]) / mas["ma100"]
-            if b200 < 0.08: signal = "Signal 5: 六線糾結突破"
-            elif b100 < 0.08: signal = "Signal 6: 五線糾結突破"
-            else: signal = "Signal 7: 多線糾結突破"
-        elif mas["ma5"] > mas["ma20"] > mas["ma60"] > mas["ma100"] > mas["ma200"]:
-            # 多頭排列
-            slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
-            if slopes >= 5: signal = "Signal 1: 五線多排強攻"
-            else: signal = "Signal 2: 趨勢多排轉強"
+        ma_l = [ma[5], ma[10], ma[20], ma[60], ma[100], ma[200]]
+        
+        # 1. 糾結模式判定 (優先級高)
+        if (max(ma_l) / min(ma_l) < 1.06) and ma_b[200] < 0.12:
+            signal = "Signal 5: 六線糾結突破"
+        elif (max(ma_l[:5]) / min(ma_l[:5]) < 1.06) and ma_b[100] < 0.12:
+            signal = "Signal 6: 五線糾結突破"
+        elif (max(ma_l[:4]) / min(ma_l[:4]) < 1.06) and ma_b[60] < 0.12:
+            signal = "Signal 7: 四線糾結突破"
+        elif (max(ma_l[:3]) / min(ma_l[:3]) < 1.06) and ma_b[20] < 0.12:
+            signal = "Signal 8: 三線糾結突破"
+            
+        # 2. 多頭排列模式 (若非糾結，則檢查排列)
+        elif ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
+            slopes = sum(1 for w in [5, 10, 20, 60, 100, 200] if ma[w] > pre_ma[w])
+            if slopes >= 5: signal = "Signal 1: 五線多排"
+            elif slopes == 4: signal = "Signal 2: 四線多排"
+            else: signal = "Signal 3: 趨勢多排"
 
         if signal == "None": return None
 
         return {
             "股票代號": code,
-            "現價": price,
-            "漲幅%": change_p,
-            "量能倍數": vol_ratio,
+            "價格": p,
+            "漲幅%": rk,
             "訊號": signal,
-            "糾結度": tangle_ratio,
-            "最後更新": last_date.strftime("%Y-%m-%d")
+            "成交量": vol,
+            "時間": now_taipei().strftime("%H:%M")
         }
-    except: return None
+        
+    except Exception as e:
+        return None
+
 
 # ==============================
-# 2. 狀態管理與排程邏輯
+# 2. 狀態管理與排程監控
 # ==============================
 if "v10" not in st.session_state:
     db = load_persistence()
@@ -154,30 +153,49 @@ if "v10" not in st.session_state:
 
 v = st.session_state.v10
 now = now_taipei()
-SCHEDULE = ["09:05", "10:00", "11:30", "13:00", "01:15"] # 修正掃描時間點
+SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "01:24"]
 
-# 自動觸發檢查 (略過重複觸發邏輯...)
-# ... (與之前版本相同)
+# 🔒 穩定排程點判定
+current_slot_key = ""
+for t in SCHEDULE:
+    try:
+        slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+        if abs((now - slot_dt).total_seconds()) <= 60:
+            current_slot_key = f"{now.strftime('%m%d')}_{t}"
+            break
+    except: pass
+
+# 觸發掃描條件
+if current_slot_key and current_slot_key != v["last_slot"] and st.session_state.active_slot != current_slot_key and not v["running"]:
+    v["running"], v["idx"], v["results"], v["last_slot"] = True, 0, [], current_slot_key
+    st.session_state.active_slot = current_slot_key
+    save_persistence(v["last_slot"], v["results"])
 
 # ==============================
-# 3. 掃描引擎 (yf.download)
+# 3. 掃描引擎 (Mutex 防護)
 # ==============================
 if v["running"] and not st.session_state.lock:
     st.session_state.lock = True
     try:
         universe = get_universe()
-        if v["idx"] < len(universe):
-            batch = universe[v["idx"]: v["idx"] + 20]
-            # 強制抓取最近 250 天資料確保 MA200 準確
-            raw = yf.download(batch, period="250d", group_by="ticker", threads=True, progress=False)
-            for code in batch:
-                try:
-                    df_sub = raw.xs(code, level=0, axis=1) if len(batch) > 1 else raw
-                    hit = analyze_stock_logic(code, df_sub)
-                    if hit: v["results"].append(hit)
-                except: pass
-            v["idx"] += len(batch)
-            if v["idx"] % 40 == 0: save_persistence(v["last_slot"], v["results"])
+        u_len = len(universe)
+        if u_len > 0 and v["idx"] < u_len:
+            if time.time() - st.session_state.yf_lock_time > 3.5:
+                batch = universe[v["idx"]: v["idx"] + 20]
+                raw = yf.download(batch, period="250d", group_by="ticker", threads=True, progress=False)
+                
+                for code in batch:
+                    try:
+                        try: df_sub = raw.xs(code, level=0, axis=1)
+                        except: df_sub = raw[code] if code in raw else raw
+                        
+                        hit = analyze_stock_logic(code, df_sub)
+                        if hit: v["results"].append(hit)
+                    except: pass
+                
+                v["idx"] += len(batch)
+                st.session_state.yf_lock_time = time.time()
+                if v["idx"] % 40 == 0: save_persistence(v["last_slot"], v["results"])
         else:
             v["running"] = False
             save_persistence(v["last_slot"], v["results"])
@@ -185,29 +203,36 @@ if v["running"] and not st.session_state.lock:
         st.session_state.lock = False
 
 # ==============================
-# 4. UI 視覺化呈現
+# 4. UI 視覺展示
 # ==============================
-st.title("🛡️ 量子哨兵 Quantum Guard v10.4")
-st.caption(f"🚀 當前台北時間: {now.strftime('%H:%M:%S')} | 資料狀態: 今日實時校驗已開啟")
+st.title("🛡️ 多頭趨勢選股策略實驗室 v10.1")
+
+# 顯示排程資訊與最後更新
+st.code("排程點: " + ", ".join(SCHEDULE))
+last_update_time = now.strftime("%Y-%m-%d %H:%M:%S")
+st.caption(f"📊 系統最後檢查時間: {last_update_time}")
+
+c1, c2 = st.columns(2)
+slot_label = v["last_slot"].split("_")[-1] if "_" in v["last_slot"] else "等待觸發"
+c1.metric("當前執行時段", slot_label)
+c2.metric("符合標的數", len(v["results"]))
+
+universe_total = len(get_universe())
+if v["running"] and universe_total > 0:
+    st.progress(min(v["idx"] / universe_total, 1.0))
+    st.caption(f"🚀 深度掃描中: {v['idx']} / {universe_total}")
 
 if v["results"]:
     df_view = pd.DataFrame(v["results"]).drop_duplicates(subset=["股票代號"], keep="last")
-    # 依照訊號與量能倍數排序
-    df_view = df_view.sort_values(["訊號", "量能倍數"], ascending=[True, False])
-    
-    st.dataframe(
-        df_view, 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "量能倍數": st.column_config.NumberColumn("量能倍數 🔥", format="%.2f"),
-            "漲幅%": st.column_config.NumberColumn("漲幅%", format="%.1f%%"),
-            "現價": st.column_config.NumberColumn("現價", format="%.2f")
-        }
-    )
+    st.dataframe(df_view.sort_values(["訊號", "股票代號"]), use_container_width=True, hide_index=True)
 else:
-    st.info("⌛ 掃描中或目前無符合訊號之標的。系統已自動排除黑 K 與非今日數據。")
+    st.info("⌛ 盤中監控中，符合 Signal 1-8 之標的將即時推播於此。")
 
-if st.button("🔴 緊急重置系統"):
-    st.session_state.v10.update({"running": False, "idx": 0, "results": []})
-    st.rerun()
+with st.expander("🛠️ 引擎診斷"):
+    st.write(f"執行狀態: {v['running']}")
+    if st.button("🔴 強制重置 (Reset All)"):
+        v.update({"running": False, "idx": 0, "results": [], "last_slot": ""})
+        st.session_state.active_slot = None
+        st.session_state.lock = False
+        save_persistence("", [])
+        st.rerun()
