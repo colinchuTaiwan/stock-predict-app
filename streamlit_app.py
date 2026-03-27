@@ -1,201 +1,198 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import json, base64, requests, time
+import numpy as np
+import json, base64, requests, time, concurrent.futures
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 系統環境與狀態初始化 (SSOT)
+# 0. 全域配置與環境 (Global Scope)
 # ==============================
 tz = timezone(timedelta(hours=8))
 def now_taipei(): return datetime.now(tz)
 
-# 驅動輪：每 4 秒刷新一次
-st_autorefresh(interval=4000, key="battle_hardened_heartbeat")
+# 驅動頻率 (4秒一次，兼顧 UI 流暢與 API 冷卻)
+st_autorefresh(interval=4000, key="v8_5_engine_tick")
 
-state_schema = {
-    "df_results": pd.DataFrame(),
-    "last_run_key": "",
-    "is_scanning": False,
-    "scan_idx": 0,
-    "found_list": [],
-    "last_api_time": 0.0,
-    "last_checkpoint_time": 0.0,
-    "bootstrapped": False,
-    "remote_version": 0.0 # 🔥 解決 Race Condition 的版本鎖
-}
-for key, default in state_schema.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-# ==============================
-# 1. GitHub 持久化 (帶 Version Lock 與校驗)
-# ==============================
-def sync_github(data_dict=None, mode="upload"):
+@st.cache_data(ttl=3600)
+def get_universe():
+    """全域緩存股票清單，避免重複 IO 損耗"""
     try:
-        repo, token = st.secrets.get("GITHUB_REPO"), st.secrets.get("GITHUB_TOKEN")
-        path = st.secrets.get("GITHUB_FILE", "engine_state_v49.json")
-        if not repo or not token: return None
+        # 預設路徑，請確保資料夾存在
+        with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
+            return json.load(f)['stocks']
+    except:
+        return ["2330.TW", "2454.TW", "2317.TW", "2303.TW", "2603.TW"]
+
+# ==============================
+# 1. 核心選股邏輯 (整合 Signal 1-8)
+# ==============================
+def analyze_stock_logic(code, df):
+    """
+    核心策略引擎：執行基礎過濾與 Signal 1-8 判定
+    """
+    try:
+        # A. 數據清洗與基本檢查
+        df = df.dropna()
+        if len(df) < 210: return None
         
-        url = f"https://api.github.com/repos/{repo}/contents/{path}"
-        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        # 取得最新一根 (d) 與前一根 (pre)
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        price = round(curr['Close'], 2)
+        open_ = round(curr['Open'], 2)
+        high_ = round(curr['High'], 2)
+        low_ = round(curr['Low'], 2)
+        vol = int(curr['Volume'])
+        
+        pre_close = round(prev['Close'], 2)
+        pre_high = round(prev['High'], 2)
+        pre_vol = int(prev['Volume']) / 1000 # 換算單位
+        
+        # B. 均線與指標計算
+        ma_periods = [5, 10, 20, 60, 100, 200]
+        mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-1] for m in ma_periods}
+        pre_mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-2] for m in ma_periods}
+        
+        mv20 = df['Volume'].rolling(20).mean().iloc[-1]
+        
+        # C. 漲幅與乖離
+        rk_p = round((price - open_) * 100 / open_, 1)
+        bias = {f"ma{m}_b": (price - mas[f"ma{m}"]) / mas[f"ma{m}"] for m in ma_periods}
+        
+        # D. 基礎門檻過濾 (Basic Filter)
+        if not (1.5 < rk_p < 7.0): return None
+        
+        cond_basic = (
+            price > pre_high and price > mas['ma5'] and 
+            mv20 > 100 and vol > 100 and price < 200 and
+            vol > (pre_vol * 1.5)
+        )
+        if not cond_basic: return None
+        
+        # E. 突破確認 (昨日收盤需在任一短中均線之下)
+        is_breakout_trigger = any(pre_close < pre_mas[f"ma{m}"] for m in [5, 10, 20, 60])
+        if not is_breakout_trigger: return None
 
-        # 🔥 A. 讀取遠端狀態 (用於恢復或版本檢查)
-        res = requests.get(url, headers=headers, timeout=5)
-        remote_data = None
-        sha = None
-        if res.status_code == 200:
-            remote_json = res.json()
-            sha = remote_json.get("sha")
-            remote_data = json.loads(base64.b64decode(remote_json['content']).decode('utf-8'))
-
-        if mode == "download":
-            return remote_data
-
-        if mode == "upload" and data_dict:
-            # 🔥 解決 Race Condition：如果遠端版本更新，放棄本次寫入避免覆蓋新進度
-            current_remote_ver = remote_data.get("version", 0) if remote_data else 0
-            if current_remote_ver > data_dict.get("version", 0):
-                return None 
+        # F. 進階訊號判定 (Signal 1-8)
+        signal = "None"
+        ma_vals = list(mas.values())
+        
+        # 1. 糾結模式判定 (優先級高：爆發力最強)
+        # 判定糾結度 (Max/Min) 與 位階 (需在五線之上)
+        tangle_ratio = max(ma_vals) / min(ma_vals)
+        above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
+        
+        if tangle_ratio < 1.08 and above_all:
+            if bias['ma200_b'] < 0.1: signal = "Signal 5: 六線糾結突破"
+            elif bias['ma100_b'] < 0.1: signal = "Signal 6: 五線糾結突破"
+            elif bias['ma60_b'] < 0.1: signal = "Signal 7: 四線糾結突破"
+            else: signal = "Signal 8: 三線糾結突破"
             
-            content_json = json.dumps(data_dict, ensure_ascii=False, indent=2)
-            content_b64 = base64.b64encode(content_json.encode('utf-8')).decode('utf-8')
-            
-            payload = {
-                "message": f"🤖 Sync v{data_dict['version']}", 
-                "content": content_b64, "branch": "main"
-            }
-            if sha: payload["sha"] = sha
-            requests.put(url, headers=headers, json=payload, timeout=10)
-            return True
-    except: pass
-    return None
+        # 2. 多頭排列模式 (若非糾結，則判斷排列強度)
+        elif mas['ma5'] > mas['ma20'] > mas['ma60'] > mas['ma100'] > mas['ma200']:
+            # 計算均線斜率向上數量
+            slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
+            if slopes >= 5: signal = "Signal 1: 五線全揚"
+            elif slopes == 4: signal = "Signal 2: 四線多排"
+            elif slopes == 3: signal = "Signal 3: 三線多排"
+            else: signal = "Signal 4: 二線多排"
 
-# 🔥 啟動引導 (Bootstrapping)
-if not st.session_state.bootstrapped:
-    remote = sync_github(mode="download")
-    if remote:
-        st.session_state.found_list = remote.get("found_list", [])
-        st.session_state.df_results = pd.DataFrame(st.session_state.found_list)
-        st.session_state.last_run_key = remote.get("last_run_key", "")
-        st.session_state.scan_idx = remote.get("scan_idx", 0)
-        st.session_state.is_scanning = remote.get("is_scanning", False)
-        st.session_state.remote_version = remote.get("version", 0)
-    st.session_state.bootstrapped = True
-    st.toast("🔄 雲端狀態同步完成 (Version Lock Active)")
+        if signal == "None": return None
+
+        return {
+            "股票代號": code, "價格": price, "漲幅%": rk_p, 
+            "訊號": signal, "糾結度": round(tangle_ratio, 3), 
+            "時間": now_taipei().strftime("%H:%M")
+        }
+    except: return None
 
 # ==============================
-# 2. 確定性數據引擎 (Deterministic Engine)
+# 2. 狀態管理與調度器 (Event-Driven)
 # ==============================
-def run_batch_logic(codes):
-    if time.time() - st.session_state.last_api_time < 2.5: return None
-    st.session_state.last_api_time = time.time()
+if "engine" not in st.session_state:
+    st.session_state.engine = {
+        "is_scanning": False, "scan_idx": 0, "found_list": [],
+        "triggered_slots": set(), "last_api_time": 0.0
+    }
 
-    raw = pd.DataFrame()
-    for _ in range(2):
-        try:
-            raw = yf.download(tickers=codes, period="300d", group_by="ticker", 
-                              auto_adjust=False, threads=False, progress=False, timeout=8)
-            # 🔥 強化：檢查資料列數，防止假成功 (Empty DataFrame)
-            if not raw.empty and raw.shape[0] > 100: break 
-        except: time.sleep(1.5)
+ev = st.session_state.engine
 
-    if raw is None or raw.empty or raw.shape[0] < 100: return []
-
-    found = []
-    for code in codes:
-        try:
-            df = raw.get(code) if len(codes) > 1 else raw
-            if df is None or df.empty or len(df) < 200: continue
-            
-            df = df.copy().dropna()
-            c, v = df['Close'], df['Volume']
-            ma200 = c.rolling(200).mean().iloc[-1]
-            v_ma20 = v.rolling(20).mean().iloc[-1]
-            rk = ((c.iloc[-1] - df['Open'].iloc[-1]) * 100 / df['Open'].iloc[-1])
-            
-            # 策略核心：多頭排列 + 1.3倍量突破
-            if not pd.isna(ma200) and c.iloc[-1] > ma200 and v.iloc[-1] > (1.3 * v_ma20) and 1 < rk < 7:
-                found.append({
-                    "股票代號": code, "價格": round(c.iloc[-1], 2), 
-                    "漲幅%": round(rk, 1), "時間": now_taipei().strftime("%H:%M")
-                })
-        except: continue
-    return found
-
-# ==============================
-# 3. 狀態機與定時 Checkpoint
-# ==============================
-SCHEDULE_TIMES = ["09:00", "09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "20:00", "21:30", "22:58"]
+# 排程設定
+SCHEDULE = ["09:05", "10:10", "11:30", "13:05", "14:45", "23:20"]
 now_dt = now_taipei()
+today_key = now_dt.strftime("%Y-%m-%d")
 
-# 🔥 修正：使用 datetime.combine 解決跨日與 1900-01-01 問題
-is_trigger_time = False
-target_t = ""
-for t_str in SCHEDULE_TIMES:
-    sched_t = datetime.strptime(t_str, "%H:%M").time()
-    sched_dt = datetime.combine(now_dt.date(), sched_t).replace(tzinfo=tz)
-    if abs((now_dt - sched_dt).total_seconds()) <= 60:
-        is_trigger_time = True
-        target_t = t_str
+current_slot = ""
+for t in SCHEDULE:
+    slot_dt = datetime.strptime(f"{today_key} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+    # 45秒時間窗，避免漂移
+    if abs((now_dt - slot_dt).total_seconds()) <= 45:
+        current_slot = f"{today_key} {t}"
         break
 
-try:
-    with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
-        full_list = json.load(f)['stocks']
-except: full_list = ["2330.TW"]
+# 觸發與重置
+if current_slot and current_slot not in ev["triggered_slots"] and not ev["is_scanning"]:
+    ev["is_scanning"] = True
+    ev["scan_idx"] = 0
+    ev["found_list"] = [] # 每次新 Slot 清空結果
+    ev["triggered_slots"].add(current_slot)
 
-# A. 觸發掃描
-if is_trigger_time and st.session_state.last_run_key != target_t and not st.session_state.is_scanning:
-    st.session_state.is_scanning = True
-    st.session_state.last_run_key = target_t
-    st.session_state.scan_idx = 0
-    st.session_state.found_list = []
-    st.session_state.remote_version = time.time()
-
-# B. 步進與定時 Checkpoint
-if st.session_state.is_scanning:
-    start = st.session_state.scan_idx
-    if start >= len(full_list):
-        st.session_state.is_scanning = False
-        # 完成時最後存檔
-        state = {
-            "found_list": st.session_state.found_list, "last_run_key": st.session_state.last_run_key,
-            "scan_idx": 0, "is_scanning": False, "version": time.time()
-        }
-        sync_github(state, mode="upload")
-        st.toast("✅ 全量掃描完成")
-    else:
-        batch_sz = 15
-        st.info(f"🔍 掃描中: {start} / {len(full_list)}")
-        chunk = run_batch_logic(full_list[start:start+batch_sz])
-        
-        if chunk is not None:
-            if chunk: st.session_state.found_list.extend(chunk)
-            st.session_state.scan_idx += batch_sz
-            st.session_state.df_results = pd.DataFrame(st.session_state.found_list)
+# ==============================
+# 3. 掃描執行器 (Batch Executor)
+# ==============================
+if ev["is_scanning"]:
+    universe = get_universe()
+    idx = ev["scan_idx"]
+    
+    if idx < len(universe):
+        # API 頻率控制 (每 3 秒跑一批)
+        if time.time() - ev["last_api_time"] > 3.2:
+            batch = universe[idx : idx + 18]
+            st.info(f"📡 正在掃描: {idx}/{len(universe)} | Slot: {current_slot}")
             
-            # 🔥 強化：Time-based Checkpoint (每 120 秒存一次，而非按數量)
-            if time.time() - st.session_state.last_checkpoint_time > 120:
-                st.session_state.remote_version = time.time()
-                checkpoint = {
-                    "found_list": st.session_state.found_list,
-                    "last_run_key": st.session_state.last_run_key,
-                    "scan_idx": st.session_state.scan_idx,
-                    "is_scanning": True,
-                    "version": st.session_state.remote_version
-                }
-                if sync_github(checkpoint, mode="upload"):
-                    st.session_state.last_checkpoint_time = time.time()
-                    st.caption("💾 背景 Checkpoint 已存入雲端...")
+            try:
+                # yf.download 本身有多執行緒，不建議外層再套 ThreadPool
+                raw = yf.download(tickers=batch, period="300d", group_by="ticker", 
+                                 auto_adjust=False, threads=True, progress=False)
+                
+                for code in batch:
+                    # 處理單/多標的結構
+                    df_sub = raw.xs(code, level=0, axis=1) if len(batch) > 1 else raw
+                    res = analyze_stock_logic(code, df_sub)
+                    if res: ev["found_list"].append(res)
+                
+                ev["scan_idx"] += len(batch)
+                ev["last_api_time"] = time.time()
+            except Exception as e:
+                st.error(f"掃描異常: {e}")
+                ev["scan_idx"] += len(batch) # 發生錯誤亦推進，防止死循環
+    else:
+        ev["is_scanning"] = False
+        st.success("✅ 本時段掃描完成")
 
 # ==============================
-# 4. UI 介面
+# 4. 監控儀表板 (UI Render)
 # ==============================
-st.title("🛡️ 戰鬥硬化交易引擎 v4.9")
+st.title("🛡️ Quantum Guard Engine v8.5")
+st.markdown(f"**當前 Slot:** `{current_slot if current_slot else '監聽中...'}`")
+
 c1, c2, c3 = st.columns(3)
-c1.metric("⏰ 台北時間", now_taipei().strftime("%H:%M:%S"))
-c2.metric("📡 引擎狀態", "🔥 掃描中" if st.session_state.is_scanning else "🟢 監聽中")
-c3.metric("📊 累計標的", len(st.session_state.df_results))
-st.dataframe(st.session_state.df_results, use_container_width=True, hide_index=True) 
+c1.metric("台北時間", now_dt.strftime("%H:%M:%S"))
+c2.metric("發現標的", len(ev["found_list"]))
+c3.metric("剩餘檔數", len(get_universe()) - ev["scan_idx"])
+
+if ev["found_list"]:
+    res_df = pd.DataFrame(ev["found_list"])
+    # 針對 Signal 5 進行排序（糾結度越低越強）
+    st.dataframe(res_df.sort_values("糾結度", ascending=True), 
+                 use_container_width=True, hide_index=True)
+else:
+    st.info("⌛ 系統待命中，符合條件之標的將顯示於此。")
+
+with st.expander("📝 引擎日誌與排程"):
+    st.write(f"已執行時段: {list(ev['triggered_slots'])}")
+    st.write(f"當前索引: {ev['scan_idx']}")
+    st.code("排程點: " + ", ".join(SCHEDULE))
