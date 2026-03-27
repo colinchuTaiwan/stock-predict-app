@@ -1,186 +1,201 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import json, base64, requests, time, math, uuid
+import json, base64, requests, time
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 系統環境與核心配置 (v10.0 SSOT)
+# 0. 系統環境與狀態初始化 (SSOT)
 # ==============================
 tz = timezone(timedelta(hours=8))
 def now_taipei(): return datetime.now(tz)
 
-st_autorefresh(interval=5000, key="v10_hf_engine")
+# 驅動輪：每 4 秒刷新一次
+st_autorefresh(interval=4000, key="battle_hardened_heartbeat")
 
 state_schema = {
-    "raw_signals": {},         
-    "df_portfolio": pd.DataFrame(),
+    "df_results": pd.DataFrame(),
     "last_run_key": "",
     "is_scanning": False,
     "scan_idx": 0,
-    "market_regime": {"status": "Neutral", "score": 1.0},
-    "execution_token": ""
+    "found_list": [],
+    "last_api_time": 0.0,
+    "last_checkpoint_time": 0.0,
+    "bootstrapped": False,
+    "remote_version": 0.0 # 🔥 解決 Race Condition 的版本鎖
 }
-for key, val in state_schema.items():
-    if key not in st.session_state: st.session_state[key] = val
+for key, default in state_schema.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # ==============================
-# 1. 因子提取與擠壓診斷 (Squeeze Logic)
+# 1. GitHub 持久化 (帶 Version Lock 與校驗)
 # ==============================
-def extract_v10_factors(df):
+def sync_github(data_dict=None, mode="upload"):
     try:
-        c, v, o = df['Close'], df['Volume'], df['Open']
+        repo, token = st.secrets.get("GITHUB_REPO"), st.secrets.get("GITHUB_TOKEN")
+        path = st.secrets.get("GITHUB_FILE", "engine_state_v49.json")
+        if not repo or not token: return None
         
-        # A. 均線系統 (5, 10, 20, 60, 100, 200)
-        ma_periods = [5, 10, 20, 60, 100, 200]
-        ma_s = {f'ma{p}': c.rolling(p).mean() for p in ma_periods}
-        ma_l = [ma_s[f'ma{p}'].iloc[-1] for p in ma_periods]
-        
-        # B. 布林帶寬擠壓 (ma_b logic)
-        # ma_b[period] = (UpperBand - LowerBand) / MidBand
-        def get_bandwidth(p):
-            mid = ma_s[f'ma{p}']
-            std = c.rolling(p).std()
-            bandwidth = (4 * std) / mid
-            return bandwidth.iloc[-1]
-        
-        ma_b = {p: get_bandwidth(p) for p in [20, 60, 100, 200]}
-        
-        # C. 🔥 核心糾結判斷 (用戶邏輯整合)
-        res_type = "分散"
-        squeeze_bonus = 1.0
-        
-        # 邏輯優先序：從最嚴格的六線開始
-        if (max(ma_l)/min(ma_l) < 1.06) and ma_b[200] < 0.12:
-            res_type, squeeze_bonus = "六線糾結", 2.0
-        elif (max(ma_l[:5])/min(ma_l[:5]) < 1.06) and ma_b[100] < 0.12:
-            res_type, squeeze_bonus = "五線糾結", 1.8
-        elif (max(ma_l[:4])/min(ma_l[:4]) < 1.06) and ma_b[60] < 0.12:
-            res_type, squeeze_bonus = "四線糾結", 1.6
-        elif (max(ma_l[:3])/min(ma_l[:3]) < 1.06) and ma_b[20] < 0.12:
-            res_type, squeeze_bonus = "三線糾結", 1.3
+        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
 
-        # D. 統計因子
-        ret = c.pct_change()
-        # 下行風險 (Downside Deviation)
-        down_risk = ret[ret < 0].tail(20).std() * math.sqrt(252)
-        v_ratio = v.iloc[-1] / v.rolling(20).mean().iloc[-1]
-        
-        return {
-            "mom": ((c.iloc[-1] - o.iloc[-1]) * 100 / o.iloc[-1]), # 當日動能
-            "risk": down_risk if not math.isnan(down_risk) else 0.5,
-            "v_score": math.log1p(v_ratio),
-            "squeeze_type": res_type,
-            "squeeze_bonus": squeeze_bonus,
-            "price": round(c.iloc[-1], 2),
-            "ts": time.time()
-        }
-    except: return None
+        # 🔥 A. 讀取遠端狀態 (用於恢復或版本檢查)
+        res = requests.get(url, headers=headers, timeout=5)
+        remote_data = None
+        sha = None
+        if res.status_code == 200:
+            remote_json = res.json()
+            sha = remote_json.get("sha")
+            remote_data = json.loads(base64.b64decode(remote_json['content']).decode('utf-8'))
 
-# ==============================
-# 2. 截面標準化與優化 (Portfolio Optimization)
-# ==============================
-def build_v10_portfolio(raw_signals):
-    if not raw_signals: return pd.DataFrame()
-    
-    df = pd.DataFrame.from_dict(raw_signals, orient='index')
-    
-    # A. Z-Score 正規化 (Cross-sectional)
-    for col in ['mom', 'v_score']:
-        df[f'z_{col}'] = (df[col] - df[col].mean()) / (df[col].std() + 1e-6)
-    
-    # B. 風險倒數標準化
-    df['inv_risk'] = 1 / (df['risk'] + 0.05)
-    df['z_risk'] = (df['inv_risk'] - df['inv_risk'].mean()) / (df['inv_risk'].std() + 1e-6)
-    
-    # C. 🔥 綜合權重 + Squeeze Bonus
-    # 權重分配：動能(35%) + 風險(35%) + 量能(30%)
-    df['composite_score'] = (df['z_mom'] * 0.35 + df['z_risk'] * 0.35 + df['z_v_score'] * 0.30) * df['squeeze_bonus']
-    
-    # D. Softmax 資本分配 (Position Sizing)
-    top_k = df.sort_values('composite_score', ascending=False).head(12).copy()
-    exp_s = np.exp(top_k['composite_score'] - top_k['composite_score'].max()) # 數值穩定處理
-    top_k['建議配置%'] = (exp_s / exp_s.sum()) * 100
-    
-    top_k['股票代號'] = top_k.index
-    return top_k[['股票代號', 'price', 'squeeze_type', 'composite_score', '建議配置%']]
+        if mode == "download":
+            return remote_data
+
+        if mode == "upload" and data_dict:
+            # 🔥 解決 Race Condition：如果遠端版本更新，放棄本次寫入避免覆蓋新進度
+            current_remote_ver = remote_data.get("version", 0) if remote_data else 0
+            if current_remote_ver > data_dict.get("version", 0):
+                return None 
+            
+            content_json = json.dumps(data_dict, ensure_ascii=False, indent=2)
+            content_b64 = base64.b64encode(content_json.encode('utf-8')).decode('utf-8')
+            
+            payload = {
+                "message": f"🤖 Sync v{data_dict['version']}", 
+                "content": content_b64, "branch": "main"
+            }
+            if sha: payload["sha"] = sha
+            requests.put(url, headers=headers, json=payload, timeout=10)
+            return True
+    except: pass
+    return None
+
+# 🔥 啟動引導 (Bootstrapping)
+if not st.session_state.bootstrapped:
+    remote = sync_github(mode="download")
+    if remote:
+        st.session_state.found_list = remote.get("found_list", [])
+        st.session_state.df_results = pd.DataFrame(st.session_state.found_list)
+        st.session_state.last_run_key = remote.get("last_run_key", "")
+        st.session_state.scan_idx = remote.get("scan_idx", 0)
+        st.session_state.is_scanning = remote.get("is_scanning", False)
+        st.session_state.remote_version = remote.get("version", 0)
+    st.session_state.bootstrapped = True
+    st.toast("🔄 雲端狀態同步完成 (Version Lock Active)")
 
 # ==============================
-# 3. 數據抓取與任務控制
+# 2. 確定性數據引擎 (Deterministic Engine)
 # ==============================
-def fetch_v10_data(codes, token):
-    if token != st.session_state.execution_token: return None
-    try:
-        # 抓取 350 天確保包含 MA200 運算窗口
-        raw = yf.download(tickers=codes, period="350d", group_by="ticker", threads=True, progress=False)
-        results = {}
-        for code in codes:
-            try:
-                df = raw.xs(code, level=0, axis=1).dropna() if len(codes) > 1 else raw.dropna()
-                if len(df) < 240: continue 
-                f = extract_v10_factors(df)
-                if f: results[code] = f
-            except: continue
-        return results
-    except: return None
+def run_batch_logic(codes):
+    if time.time() - st.session_state.last_api_time < 2.5: return None
+    st.session_state.last_api_time = time.time()
 
-# [排程與自動執行模組]
-SCHEDULE = ["09:30", "10:50", "12:20", "13:10", "15:00", "22:46"]
-now_t = now_taipei()
-for t_str in SCHEDULE:
-    sched = datetime.combine(now_t.date(), datetime.strptime(t_str, "%H:%M").time()).replace(tzinfo=tz)
-    if abs((now_t - sched).total_seconds()) <= 60:
-        if st.session_state.last_run_key != t_str and not st.session_state.is_scanning:
-            st.session_state.update({"execution_token": str(uuid.uuid4()), "is_scanning": True, "last_run_key": t_str, "scan_idx": 0, "raw_signals": {}})
-            break
+    raw = pd.DataFrame()
+    for _ in range(2):
+        try:
+            raw = yf.download(tickers=codes, period="300d", group_by="ticker", 
+                              auto_adjust=False, threads=False, progress=False, timeout=8)
+            # 🔥 強化：檢查資料列數，防止假成功 (Empty DataFrame)
+            if not raw.empty and raw.shape[0] > 100: break 
+        except: time.sleep(1.5)
 
+    if raw is None or raw.empty or raw.shape[0] < 100: return []
+
+    found = []
+    for code in codes:
+        try:
+            df = raw.get(code) if len(codes) > 1 else raw
+            if df is None or df.empty or len(df) < 200: continue
+            
+            df = df.copy().dropna()
+            c, v = df['Close'], df['Volume']
+            ma200 = c.rolling(200).mean().iloc[-1]
+            v_ma20 = v.rolling(20).mean().iloc[-1]
+            rk = ((c.iloc[-1] - df['Open'].iloc[-1]) * 100 / df['Open'].iloc[-1])
+            
+            # 策略核心：多頭排列 + 1.3倍量突破
+            if not pd.isna(ma200) and c.iloc[-1] > ma200 and v.iloc[-1] > (1.3 * v_ma20) and 1 < rk < 7:
+                found.append({
+                    "股票代號": code, "價格": round(c.iloc[-1], 2), 
+                    "漲幅%": round(rk, 1), "時間": now_taipei().strftime("%H:%M")
+                })
+        except: continue
+    return found
+
+# ==============================
+# 3. 狀態機與定時 Checkpoint
+# ==============================
+SCHEDULE_TIMES = ["09:00", "09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "20:00", "21:30", "22:56"]
+now_dt = now_taipei()
+
+# 🔥 修正：使用 datetime.combine 解決跨日與 1900-01-01 問題
+is_trigger_time = False
+target_t = ""
+for t_str in SCHEDULE_TIMES:
+    sched_t = datetime.strptime(t_str, "%H:%M").time()
+    sched_dt = datetime.combine(now_dt.date(), sched_t).replace(tzinfo=tz)
+    if abs((now_dt - sched_dt).total_seconds()) <= 60:
+        is_trigger_time = True
+        target_t = t_str
+        break
+
+try:
+    with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
+        full_list = json.load(f)['stocks']
+except: full_list = ["2330.TW"]
+
+# A. 觸發掃描
+if is_trigger_time and st.session_state.last_run_key != target_t and not st.session_state.is_scanning:
+    st.session_state.is_scanning = True
+    st.session_state.last_run_key = target_t
+    st.session_state.scan_idx = 0
+    st.session_state.found_list = []
+    st.session_state.remote_version = time.time()
+
+# B. 步進與定時 Checkpoint
 if st.session_state.is_scanning:
-    try:
-        with open("db/taiwan_Full.json", "r") as f: universe = json.load(f)['stocks']
-    except: universe = ["2330.TW", "2454.TW", "2317.TW"]
-    
-    idx = st.session_state.scan_idx
-    if idx >= len(universe):
+    start = st.session_state.scan_idx
+    if start >= len(full_list):
         st.session_state.is_scanning = False
-        st.session_state.df_portfolio = build_v10_portfolio(st.session_state.raw_signals)
+        # 完成時最後存檔
+        state = {
+            "found_list": st.session_state.found_list, "last_run_key": st.session_state.last_run_key,
+            "scan_idx": 0, "is_scanning": False, "version": time.time()
+        }
+        sync_github(state, mode="upload")
+        st.toast("✅ 全量掃描完成")
     else:
-        batch = universe[idx : idx + 35]
-        st.info(f"🏛️ v10 核心引擎運算中: {idx}/{len(universe)}")
-        res = fetch_v10_data(batch, st.session_state.execution_token)
-        if res:
-            st.session_state.raw_signals.update(res)
-            st.session_state.scan_idx += 35
+        batch_sz = 15
+        st.info(f"🔍 掃描中: {start} / {len(full_list)}")
+        chunk = run_batch_logic(full_list[start:start+batch_sz])
+        
+        if chunk is not None:
+            if chunk: st.session_state.found_list.extend(chunk)
+            st.session_state.scan_idx += batch_sz
+            st.session_state.df_results = pd.DataFrame(st.session_state.found_list)
+            
+            # 🔥 強化：Time-based Checkpoint (每 120 秒存一次，而非按數量)
+            if time.time() - st.session_state.last_checkpoint_time > 120:
+                st.session_state.remote_version = time.time()
+                checkpoint = {
+                    "found_list": st.session_state.found_list,
+                    "last_run_key": st.session_state.last_run_key,
+                    "scan_idx": st.session_state.scan_idx,
+                    "is_scanning": True,
+                    "version": st.session_state.remote_version
+                }
+                if sync_github(checkpoint, mode="upload"):
+                    st.session_state.last_checkpoint_time = time.time()
+                    st.caption("💾 背景 Checkpoint 已存入雲端...")
 
 # ==============================
-# 4. 專業資產配置看板 (Dashboard)
+# 4. UI 介面
 # ==============================
-st.title("🏦 Quant Hedge Fund Engine v10.0")
-st.markdown("---")
-
+st.title("🛡️ 戰鬥硬化交易引擎 v4.9")
 c1, c2, c3 = st.columns(3)
 c1.metric("⏰ 台北時間", now_taipei().strftime("%H:%M:%S"))
-c2.metric("🧬 擠壓偵測數", len([v for v in st.session_state.raw_signals.values() if v['squeeze_type'] != "分散"]))
-c3.metric("💼 投資組合標的", len(st.session_state.df_portfolio))
-
-if not st.session_state.df_portfolio.empty:
-    st.subheader("🏆 最優資本分配組合 (Squeeze-Driven Allocation)")
-    
-    display_df = st.session_state.df_portfolio.copy()
-    display_df.columns = ["股票代號", "結算價", "糾結級別", "統計總分", "建議配置%"]
-    
-    # 視覺化邏輯：針對高級別糾結顯示特殊背景
-    st.dataframe(
-        display_df.style.background_gradient(cmap='YlGn', subset=['建議配置%'])
-        .apply(lambda x: ['background-color: #1b5e20; color: white; font-weight: bold' if v == '六線糾結' else '' for v in x], subset=['糾結級別'])
-        .format({"建議配置%": "{:.2f}%", "統計總分": "{:.2f}"}),
-        use_container_width=True, hide_index=True
-    )
-    
-    # 資金權重圖
-    st.bar_chart(display_df.set_index("股票代號")["建議配置%"])
-    
-    st.success("🎯 **策略提示**：當前組合聚焦於具備『長週期均線糾結』且『波動率極度壓縮』之標的，通常預示重大變盤在即。")
-else:
-    st.info("⌛ 正在收集市場數據進行六線糾結診斷與 Z-Score 標準化優化...")
+c2.metric("📡 引擎狀態", "🔥 掃描中" if st.session_state.is_scanning else "🟢 監聽中")
+c3.metric("📊 累計標的", len(st.session_state.df_results))
+st.dataframe(st.session_state.df_results, use_container_width=True, hide_index=True) 檢視程式碼並提出意見
