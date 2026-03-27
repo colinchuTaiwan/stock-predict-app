@@ -108,7 +108,8 @@ def run_scan_logic(stock_codes, status_placeholder):
     print(" run_scan_logic")
     st.sidebar.write(" run_scan_logic")
     st.write("run_scan_logic")
-    st.log("run_scan_logic")
+    st.info("run_scan_logic")
+    
     all_found = []
     status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
     
@@ -146,7 +147,7 @@ def run_scan_logic(stock_codes, status_placeholder):
                 if basic_check:
                     print("code:",code,",price:",price,",ma5:",ma[5])
                     st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
-                    st.toast(f"✅ 找到符合標的: {code}", icon="📈")
+                    st.info({code})
                     #st.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
                     #st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
                     res_type = ""
@@ -183,7 +184,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:32", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:37", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -209,11 +210,14 @@ st.sidebar.write(f"🕒 系統當前分鐘: {curr_min}")
 print("0003")
 st.sidebar.write(f"003")
 st.write("003")
+st.info("003")
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     
     print("0004")
     st.sidebar.write(f"004")
     st.write("004")
+    st.info("004")
+    
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
     
@@ -223,7 +227,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         
         st.sidebar.write(f"005")
         st.write("005")
-        st.log("005")
+        st.info("005")
         
         st.session_state.df_results = df_cloud
         st.session_state.last_update = time_cloud
@@ -235,8 +239,9 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         print(new_res)
         st.sidebar.write(f"006")
         st.write("006")
-        st.log("006")
+        st.info("006")
         st.sidebar.write(f" 資料: {new_res}")   
+        st.info(new_res)
         
         st.session_state.df_results = new_res
         st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
@@ -247,8 +252,9 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         upload_to_github(cache_data, path=f"history/{now_taipei().strftime('%Y-%m-%d')}.json")
     
     st.sidebar.write(f"0007")
-    st.log("007")
+    st.info("007")
     st.write("007")
+    
     time.sleep(2)
     status_box.empty()
     st.rerun()
