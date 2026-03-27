@@ -74,48 +74,122 @@ def calc_indicators(df):
 def analyze_stock_logic(code, df):
     try:
         df = df.dropna()
-        if len(df) < 200:
+        if len(df) < 210:
             return None
 
         ind = calc_indicators(df)
+
         last = ind.iloc[-1]
+        prev = ind.iloc[-2]
 
-        price = round(last['Close'], 2)
-        rk = round(last['RK_p'], 1)
-        vol = int(last['Volume'] / 1000)
+        # ==============================
+        # 1️⃣ 基本數據
+        # ==============================
+        price = last['Close']
+        open_ = last['Open']
+        vol = last['Volume'] / 1000   # 張
 
+        pre_close = prev['Close']
+        pre_high = prev['High']
+        pre_vol = prev['Volume'] / 1000
+
+        rk = (price - open_) * 100 / open_
+
+        # ==============================
+        # 2️⃣ 均線
+        # ==============================
         ma = {w: last[f"ma{w}"] for w in [5, 10, 20, 60, 100, 200]}
+        pre_ma = {w: prev[f"ma{w}"] for w in [5, 10, 20, 60, 100, 200]}
+
         ma_b = {w: last.get(f"ma{w}_b", 0) for w in [20, 60, 100, 200]}
 
-        # 🎯 核心條件（你成功版本）
-        if not (1 < rk < 7 and 
-                price > max(ma[20], ma[60], ma[100], ma[200]) and 
-                vol > 100):
+        # 均線斜率（方向）
+        ma_d = {w: ma[w] - pre_ma[w] for w in ma}
+
+        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
+
+        # ==============================
+        # 3️⃣ 第一層：紅K過濾
+        # ==============================
+        if not (1 < rk < 7):
             return None
 
-        ma_list = list(ma.values())
+        # ==============================
+        # 4️⃣ 第二層：基礎條件（🔥關鍵）
+        # ==============================
+        cond_basic = (
+            (price > pre_high and price > ma[5]) and
+            (mv20 > 100 and vol > 100) and
+            (price < 200) and
+            (vol > pre_vol * 1.5)
+        )
+
+        if not cond_basic:
+            return None
+
+        # ==============================
+        # 5️⃣ 第三層：突破觸發（🔥關鍵）
+        # ==============================
+        is_breakout = (
+            pre_close < pre_ma[5] or
+            pre_close < pre_ma[10] or
+            pre_close < pre_ma[20] or
+            pre_close < pre_ma[60]
+        )
+
+        if not is_breakout:
+            return None
+
+        # ==============================
+        # 6️⃣ Signal 判定
+        # ==============================
+        signal = None
+
+        # ===== 多頭排列 =====
+        trend_base = (ma[5] > ma[20] > ma[60] > ma[100] > ma[200])
+
+        if trend_base:
+            up_count = sum(1 for w in [5,20,60,100,200] if ma_d[w] > 0)
+
+            if up_count >= 5:
+                signal = "Signal 1: 五線多排"
+            elif up_count == 4:
+                signal = "Signal 2: 四線多排"
+            elif up_count == 3:
+                signal = "Signal 3: 三線多排"
+            elif up_count == 2:
+                signal = "Signal 4: 二線多排"
+
+        # ===== 糾結模式 =====
+        ma_list = [ma[5], ma[10], ma[20], ma[60], ma[100], ma[200]]
+
         if min(ma_list) == 0:
             return None
 
-        res_type = ""
+        above_all = all(price > ma[w] for w in [20,60,100,200])
 
-        if (max(ma_list)/min(ma_list) < 1.06) and ma_b[200] < 0.12:
-            res_type = "六線糾結"
-        elif (max(ma_list[:5])/min(ma_list[:5]) < 1.06) and ma_b[100] < 0.12:
-            res_type = "五線糾結"
-        elif (max(ma_list[:4])/min(ma_list[:4]) < 1.06) and ma_b[60] < 0.12:
-            res_type = "四線糾結"
-        elif (max(ma_list[:3])/min(ma_list[:3]) < 1.06) and ma_b[20] < 0.12:
-            res_type = "三線糾結"
+        if above_all:
+            if (max(ma_list)/min(ma_list) < 1.08) and ma_b[200] < 0.1:
+                signal = "Signal 5: 六線糾結"
+            elif (max(ma_list[:5])/min(ma_list[:5]) < 1.08) and ma_b[100] < 0.1:
+                signal = "Signal 6: 五線糾結"
+            elif (max(ma_list[:4])/min(ma_list[:4]) < 1.08) and ma_b[60] < 0.1:
+                signal = "Signal 7: 四線糾結"
+            elif (max(ma_list[:3])/min(ma_list[:3]) < 1.08) and ma_b[20] < 0.1:
+                signal = "Signal 8: 三線糾結"
 
-        if not res_type:
+        if not signal:
             return None
 
+        # ==============================
+        # 7️⃣ 回傳
+        # ==============================
         return {
             "股票代號": code,
-            "價格": price,
-            "漲幅%": rk,
-            "型態": res_type,
+            "價格": round(price, 2),
+            "漲幅%": round(rk, 1),
+            "成交量": int(vol),
+            "訊號": signal,
             "時間": now_taipei().strftime("%H:%M")
         }
 
@@ -140,7 +214,7 @@ now = now_taipei()
 # ==============================
 # 6. 排程觸發
 # ==============================
-SCHEDULE = ["08:40", "09:30", "10:50", "12:20", "13:15", "02:30"]
+SCHEDULE = ["08:40", "09:30", "10:50", "12:20", "13:15", "02:39"]
 
 current_slot_key = ""
 for t in SCHEDULE:
@@ -209,7 +283,7 @@ if v["running"] and not st.session_state.lock:
 # ==============================
 st_autorefresh(interval=1000, key="heartbeat")
 
-st.title("🛡️ 多頭趨勢選股策略 v10（穩定最終版）")
+st.title("🛡️ 多頭趨勢選股實驗室 v10.2")
 
 st.code("排程: " + ", ".join(SCHEDULE))
 st.caption(f"最後更新: {now.strftime('%Y-%m-%d %H:%M:%S')}")
