@@ -106,6 +106,7 @@ def calc_indicators(df):
 
 def run_scan_logic(stock_codes, status_placeholder):
     print(" run_scan_logic")
+    st.sidebar.write(" run_scan_logic")
     all_found = []
     status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
     
@@ -143,7 +144,8 @@ def run_scan_logic(stock_codes, status_placeholder):
                 if basic_check:
                     print("code:",code,",price:",price,",ma5:",ma[5])
                     st.toast(f"✅ 找到符合標的: {code}", icon="📈")
-                    st.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
+                    #st.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
+                    st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
                     res_type = ""
                     
                     # 【五線糾結判斷】 (5, 10, 20, 60, 100)
@@ -178,7 +180,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:16", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:23", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -216,8 +218,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         new_res = run_scan_logic(stock_list, status_box)
         
         print(new_res)
-        st.sidebar.write(f" 資料: {new_res}")
-        
+        st.sidebar.write(f" 資料: {new_res}")        
         st.session_state.df_results = new_res
         st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -226,6 +227,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         upload_to_github(cache_data)
         upload_to_github(cache_data, path=f"history/{now_taipei().strftime('%Y-%m-%d')}.json")
     
+    st.sidebar.write(f"#################")
     time.sleep(2)
     status_box.empty()
     st.rerun()
