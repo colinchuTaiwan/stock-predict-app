@@ -107,6 +107,8 @@ def calc_indicators(df):
 def run_scan_logic(stock_codes, status_placeholder):
     print(" run_scan_logic")
     st.sidebar.write(" run_scan_logic")
+    st.write("run_scan_logic")
+    st.log("run_scan_logic")
     all_found = []
     status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
     
@@ -181,7 +183,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:23", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:32", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -206,18 +208,23 @@ st.sidebar.write(f"🕒 系統當前分鐘: {curr_min}")
 
 print("0003")
 st.sidebar.write(f"003")
+st.write("003")
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     
     print("0004")
     st.sidebar.write(f"004")
-    
+    st.write("004")
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
     
     # 優先嘗試從雲端同步（避免多個用戶開啟網頁導致重複掃描）
     df_cloud, time_cloud = load_cache_from_github()
     if time_cloud.startswith(now_taipei().strftime("%Y-%m-%d")):
+        
         st.sidebar.write(f"005")
+        st.write("005")
+        st.log("005")
+        
         st.session_state.df_results = df_cloud
         st.session_state.last_update = time_cloud
         status_box.success("☁️ 已從 GitHub 同步今日最新數據")
@@ -227,6 +234,8 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         
         print(new_res)
         st.sidebar.write(f"006")
+        st.write("006")
+        st.log("006")
         st.sidebar.write(f" 資料: {new_res}")   
         
         st.session_state.df_results = new_res
@@ -237,7 +246,9 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         upload_to_github(cache_data)
         upload_to_github(cache_data, path=f"history/{now_taipei().strftime('%Y-%m-%d')}.json")
     
-    st.sidebar.write(f"#################")
+    st.sidebar.write(f"0007")
+    st.log("007")
+    st.write("007")
     time.sleep(2)
     status_box.empty()
     st.rerun()
