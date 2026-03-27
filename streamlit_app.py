@@ -136,6 +136,7 @@ def run_scan_logic(stock_codes, status_placeholder):
                 )
 
                 if basic_check:
+                    print("code:",code,",price:",price,",ma5:",ma5)
                     res_type = ""
                     
                     # 【五線糾結判斷】 (5, 10, 20, 60, 100)
@@ -179,7 +180,7 @@ try:
 except:
     stock_list = ["2330.TW", "2454.TW", "2317.TW"]
     
-print(stock_list)
+#print(stock_list)
 
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
