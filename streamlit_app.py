@@ -186,8 +186,8 @@ if v["running"] and not st.session_state.lock:
         u_len = len(universe)
         if u_len > 0 and v["idx"] < u_len:
             if time.time() - st.session_state.yf_lock_time > 3.5:
-                batch = universe[v["idx"]: v["idx"] + 20]
-                raw = yf.download(batch, period="250d", group_by="ticker", threads=True, progress=False)
+                batch = universe[v["idx"]: v["idx"] + 10]
+                raw = yf.download(batch, period="300d", group_by="ticker", threads=True, progress=False)
                 
                 for code in batch:
                     try:
