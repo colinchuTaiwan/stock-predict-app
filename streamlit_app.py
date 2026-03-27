@@ -169,7 +169,7 @@ if "v10" not in st.session_state:
 
 v = st.session_state.v10
 now = now_taipei()
-SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "00:50"]
+SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "01:07"]
 
 # 🔒 穩定排程點判定
 current_slot_key = ""
