@@ -158,13 +158,13 @@ def analyze_stock_logic(code, df):
             up_count = sum(1 for w in [5,20,60,100,200] if ma_d[w] > 0)
 
             if up_count >= 5:
-                signal = "Signal 1"
+                signal = "五線多排"
             elif up_count == 4:
-                signal = "Signal 2"
+                signal = "四線多排"
             elif up_count == 3:
-                signal = "Signal 3"
+                signal = "三線多排"
             elif up_count == 2:
-                signal = "Signal 4"
+                signal = "二線多排"
 
         # ===== 糾結 =====
         ma_list = list(ma.values())
@@ -174,13 +174,13 @@ def analyze_stock_logic(code, df):
 
         if all(price > ma[w] for w in [20,60,100,200]):
             if (max(ma_list)/min(ma_list) < 1.08) and ma_b[200] < 0.1:
-                signal = "Signal 5"
+                signal = "六線糾結"
             elif (max(ma_list[:5])/min(ma_list[:5]) < 1.08) and ma_b[100] < 0.15:
-                signal = "Signal 6"
+                signal = "五線糾結"
             elif (max(ma_list[:4])/min(ma_list[:4]) < 1.08) and ma_b[60] < 0.15:
-                signal = "Signal 7"
+                signal = "四線糾結"
             elif (max(ma_list[:3])/min(ma_list[:3]) < 1.08) and ma_b[20] < 0.15:
-                signal = "Signal 8"
+                signal = "三線糾結"
 
         if not signal:
             return None
@@ -188,7 +188,7 @@ def analyze_stock_logic(code, df):
         return {
             "股票代號": code,
             "價格": round(price, 2),
-            "漲幅%": round(rk, 1),
+            #"漲幅%": round(rk, 1),
             "型態": signal,
             "時間": now_taipei().strftime("%H:%M")
         }
@@ -282,7 +282,7 @@ if v["running"] and not st.session_state.lock:
 # ==============================
 # 8. UI
 # ==============================
-st_autorefresh(interval=1000, key="heartbeat")
+st_autorefresh(interval=2000, key="heartbeat")
 
 st.title("🛡️ 多頭趨勢選股實驗室 v10.2")
 
