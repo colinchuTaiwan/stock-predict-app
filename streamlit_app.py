@@ -182,4 +182,4 @@ with st.sidebar:
         st.session_state.df_results = df
         st.success(f"同步成功: {ut}")
     st.subheader("📅 自動掃描點")
-    st.code("\n".join(SCHEDULE_TIMES))0
+    st.code("\n".join(SCHEDULE_TIMES))
