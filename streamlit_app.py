@@ -24,6 +24,7 @@ CACHE_FILE = st.secrets.get("GITHUB_FILE", "scan_cache.json")
 CACHE_PATH = "scan_cache.json"
 
 def upload_to_github(content_dict, path=CACHE_FILE):
+    print("upload_to_github")
     """通用 GitHub 上傳函數，支援路徑自動切換"""
     if not GITHUB_TOKEN or not GITHUB_REPO: return False
     try:
@@ -57,6 +58,7 @@ def upload_to_github(content_dict, path=CACHE_FILE):
         return False
 
 def load_cache_from_github():
+    print("load_cache_from_github")
     """從 GitHub API 讀取最新掃描快取，穩定版"""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return pd.DataFrame(), "未知"
@@ -88,6 +90,7 @@ def load_cache_from_github():
 # 2. 技術指標與掃描引擎
 # ==============================
 def calc_indicators(df):
+  
     df = df.copy()
     close = df['Close']
     for w in [5,10,20,60,100,200]:
@@ -101,6 +104,7 @@ def calc_indicators(df):
     return df
 
 def run_scan_logic(stock_codes, status_placeholder):
+    print(" run_scan_logic")
     all_found = []
     status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
     
@@ -171,7 +175,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:53", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:59", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -181,16 +185,16 @@ except:
     stock_list = ["2330.TW", "2454.TW", "2317.TW"]
     
 #print(stock_list)
-
+print("0001")
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
 if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
-
+print("0002")
 # 自動掃描觸發
 curr_min = now_taipei().strftime("%H:%M")
 
 
-
+print("0003")
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
@@ -204,7 +208,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     else:
         # 雲端沒資料才掃描
         new_res = run_scan_logic(stock_list, status_box)
-        5
+        
         print(new_res)
         
         st.session_state.df_results = new_res
