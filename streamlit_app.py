@@ -8,6 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================
 # 0. 時區與秒級刷新
 # ==============================
+print("000")
 tz = timezone(timedelta(hours=8))
 def now_taipei():
     return datetime.now(tz)
@@ -175,7 +176,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:59", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:07", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -192,10 +193,12 @@ if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
 print("0002")
 # 自動掃描觸發
 curr_min = now_taipei().strftime("%H:%M")
+print(curr_min)
 
 
 print("0003")
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
+    print("0004")
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
     
@@ -227,6 +230,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
 # 4. 前端介面
 # ==============================
 st.title("📊 台股多頭排列融合掃描器 v3")
+print("📊 台股多頭排列融合掃描器 v3")
 
 c1, c2, c3 = st.columns(3)
 c1.metric("⏰ 台北時間", now_taipei().strftime("%H:%M:%S"))
