@@ -61,6 +61,8 @@ def calc_indicators(df):
     return df
 
 def run_scan_logic(stock_codes, status_placeholder):
+    st.sidebar.write("run_scan_logic")
+    st.write("run_scan_logic")
     found_in_chunk = []
     try:
         # 下載這 10 檔的資料
@@ -68,6 +70,8 @@ def run_scan_logic(stock_codes, status_placeholder):
                           auto_adjust=False, threads=True, progress=False)
         
         for code in stock_codes:
+             st.sidebar.write({code})
+             st.write({code})
             try:
                 df = raw[code].copy().dropna() if len(stock_codes) > 1 else raw.copy().dropna()
                 if len(df) < 200: continue
@@ -103,7 +107,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程與分批執行邏輯
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:50", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "18:58", "23:00"]
 
 # 載入股票名單
 try:
@@ -133,12 +137,15 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         st.session_state.df_results = pd.DataFrame() # 清空舊資料
         batch_size = 10
         total_stocks = len(stock_list)
-        
+        st.write(stock_list)
+        st.sidebar.write(stock_list)
         with st.status(f"🚀 啟動全量掃描 ({total_stocks} 檔)...", expanded=True) as status:
             all_found = []
             for i in range(0, total_stocks, batch_size):
                 batch = stock_list[i : i + batch_size]
                 status.write(f"正在檢查第 {i+1} ~ {min(i+batch_size, total_stocks)} 檔...")
+                st.write(f"正在檢查第 {i+1} ~ {min(i+batch_size, total_stocks)} 檔...")
+                st.sidebar.write(f"正在檢查第 {i+1} ~ {min(i+batch_size, total_stocks)} 檔...")
                 
                 # 執行掃描
                 chunk_results = run_scan_logic(batch, status)
