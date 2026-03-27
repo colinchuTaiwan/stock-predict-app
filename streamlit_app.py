@@ -291,7 +291,7 @@ st.caption(f"最後更新: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
 c1, c2 = st.columns(2)
 slot_label = v["last_slot"].split("_")[-1] if "_" in v["last_slot"] else "等待中"
-c1.metric("當前時段", slot_label)
+c1.metric("股票更新時間", slot_label)
 c2.metric("符合數量", len(v["results"]))
 
 if v["running"]:
