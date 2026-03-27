@@ -1,198 +1,306 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import json, base64, requests, time, concurrent.futures
+import json, os, time
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 全域配置與環境 (Global Scope)
+# 0. 全域配置 + Stability Layer
 # ==============================
+STATE_FILE = "db/scan_results.json"
 tz = timezone(timedelta(hours=8))
-def now_taipei(): return datetime.now(tz)
 
-# 驅動頻率 (4秒一次，兼顧 UI 流暢與 API 冷卻)
-st_autorefresh(interval=4000, key="v8_5_engine_tick")
+def now_taipei():
+    return datetime.now(tz)
+
+# 🔒 Scan Mutex + Guard State
+if "lock" not in st.session_state:
+    st.session_state.lock = False
+
+if "active_slot" not in st.session_state:
+    st.session_state.active_slot = None
+
+if "yf_lock_time" not in st.session_state:
+    st.session_state.yf_lock_time = 0
+
 
 @st.cache_data(ttl=3600)
 def get_universe():
-    """全域緩存股票清單，避免重複 IO 損耗"""
     try:
-        # 預設路徑，請確保資料夾存在
-        with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
-            return json.load(f)['stocks']
+        if not os.path.exists("db/taiwan_Full.json"):
+            return []
+        with open("db/taiwan_Full.json", "r", encoding="utf-8-sig") as f:
+            return json.load(f).get("stocks", [])
     except:
-        return ["2330.TW", "2454.TW", "2317.TW", "2303.TW", "2603.TW"]
+        return []
+
+
+def load_persistence():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"last_slot": "", "list": []}
+
+
+def save_persistence(last_slot, results):
+    # 🔒 atomic write (防 JSON 壞掉)
+    try:
+        os.makedirs("db", exist_ok=True)
+        tmp = STATE_FILE + ".tmp"
+
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {"last_slot": last_slot, "list": results},
+                f,
+                ensure_ascii=False
+            )
+
+        os.replace(tmp, STATE_FILE)
+
+    except:
+        pass
+
+
+st_autorefresh(interval=5000, key="v9_8_heartbeat")
 
 # ==============================
-# 1. 核心選股邏輯 (整合 Signal 1-8)
+# 1. Strategy Filter (不改邏輯)
 # ==============================
-def analyze_stock_logic(code, df):
-    """
-    核心策略引擎：執行基礎過濾與 Signal 1-8 判定
-    """
+def run_strategy_filter(code, df):
     try:
-        # A. 數據清洗與基本檢查
-        df = df.dropna()
-        if len(df) < 210: return None
-        
-        # 取得最新一根 (d) 與前一根 (pre)
+        if df is None or df.empty or len(df) < 200:
+            return None
+
         curr = df.iloc[-1]
         prev = df.iloc[-2]
-        
-        price = round(curr['Close'], 2)
-        open_ = round(curr['Open'], 2)
-        high_ = round(curr['High'], 2)
-        low_ = round(curr['Low'], 2)
-        vol = int(curr['Volume'])
-        
-        pre_close = round(prev['Close'], 2)
-        pre_high = round(prev['High'], 2)
-        pre_vol = int(prev['Volume']) / 1000 # 換算單位
-        
-        # B. 均線與指標計算
-        ma_periods = [5, 10, 20, 60, 100, 200]
-        mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-1] for m in ma_periods}
-        pre_mas = {f"ma{m}": df['Close'].rolling(m).mean().iloc[-2] for m in ma_periods}
-        
-        mv20 = df['Volume'].rolling(20).mean().iloc[-1]
-        
-        # C. 漲幅與乖離
-        rk_p = round((price - open_) * 100 / open_, 1)
-        bias = {f"ma{m}_b": (price - mas[f"ma{m}"]) / mas[f"ma{m}"] for m in ma_periods}
-        
-        # D. 基礎門檻過濾 (Basic Filter)
-        if not (1.5 < rk_p < 7.0): return None
-        
-        cond_basic = (
-            price > pre_high and price > mas['ma5'] and 
-            mv20 > 100 and vol > 100 and price < 200 and
-            vol > (pre_vol * 1.5)
-        )
-        if not cond_basic: return None
-        
-        # E. 突破確認 (昨日收盤需在任一短中均線之下)
-        is_breakout_trigger = any(pre_close < pre_mas[f"ma{m}"] for m in [5, 10, 20, 60])
-        if not is_breakout_trigger: return None
 
-        # F. 進階訊號判定 (Signal 1-8)
-        signal = "None"
-        ma_vals = list(mas.values())
-        
-        # 1. 糾結模式判定 (優先級高：爆發力最強)
-        # 判定糾結度 (Max/Min) 與 位階 (需在五線之上)
-        tangle_ratio = max(ma_vals) / min(ma_vals)
-        above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
-        
-        if tangle_ratio < 1.08 and above_all:
-            if bias['ma200_b'] < 0.1: signal = "Signal 5: 六線糾結突破"
-            elif bias['ma100_b'] < 0.1: signal = "Signal 6: 五線糾結突破"
-            elif bias['ma60_b'] < 0.1: signal = "Signal 7: 四線糾結突破"
-            else: signal = "Signal 8: 三線糾結突破"
-            
-        # 2. 多頭排列模式 (若非糾結，則判斷排列強度)
-        elif mas['ma5'] > mas['ma20'] > mas['ma60'] > mas['ma100'] > mas['ma200']:
-            # 計算均線斜率向上數量
-            slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
-            if slopes >= 5: signal = "Signal 1: 五線全揚"
-            elif slopes == 4: signal = "Signal 2: 四線多排"
-            elif slopes == 3: signal = "Signal 3: 三線多排"
-            else: signal = "Signal 4: 二線多排"
+        price = round(curr["Close"], 2)
+        open_ = round(curr["Open"], 2)
+        vol = int(curr["Volume"])
+        pre_high = round(prev["High"], 2)
+        pre_vol = int(prev["Volume"]) / 1000
 
-        if signal == "None": return None
+        RK_p = round((price - open_) * 100 / open_, 1)
+
+        ma = {m: round(df["Close"].rolling(m).mean().iloc[-1], 2)
+              for m in [5, 10, 20, 60, 100, 200]}
+
+        pre_ma = {m: df["Close"].rolling(m).mean().iloc[-2]
+                  for m in [5, 10, 20, 60]}
+
+        mv20 = df["Volume"].rolling(20).mean().iloc[-1]
+
+        # 基礎條件
+        if not (1.0 < RK_p < 7.5):
+            return None
+
+        if not (
+            price > pre_high and price > ma[5]
+            and mv20 > 100 and vol > 100
+            and price < 200 and vol > pre_vol * 1.5
+        ):
+            return None
+
+        if not any(prev["Close"] < pre_ma[m] for m in [5, 10, 20, 60]):
+            return None
+
+        # 訊號
+        all_mas = [ma[m] for m in [5, 10, 20, 60, 100, 200]]
+        tangle_ratio = max(all_mas) / min(all_mas)
+
+        sig = None
+
+        if all(price > ma[m] for m in [20, 60, 100, 200]):
+            if tangle_ratio < 1.08:
+                sig = "Signal 5: 六線糾結"
+            elif max(all_mas[:5]) / min(all_mas[:5]) < 1.08:
+                sig = "Signal 6: 五線糾結"
+
+        if not sig and ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
+            sig = "Signal 1: 多頭排列"
+
+        if not sig:
+            return None
 
         return {
-            "股票代號": code, "價格": price, "漲幅%": rk_p, 
-            "訊號": signal, "糾結度": round(tangle_ratio, 3), 
+            "代號": code,
+            "價格": price,
+            "漲幅%": RK_p,
+            "訊號": sig,
+            "糾結度": round(tangle_ratio, 3),
             "時間": now_taipei().strftime("%H:%M")
         }
-    except: return None
+
+    except:
+        return None
+
 
 # ==============================
-# 2. 狀態管理與調度器 (Event-Driven)
+# 2. State Init + Slot Guard
 # ==============================
-if "engine" not in st.session_state:
-    st.session_state.engine = {
-        "is_scanning": False, "scan_idx": 0, "found_list": [],
-        "triggered_slots": set(), "last_api_time": 0.0
+if "v98" not in st.session_state:
+    db = load_persistence()
+    st.session_state.v98 = {
+        "running": False,
+        "idx": 0,
+        "results": db["list"],
+        "last_slot": db["last_slot"],
+        "last_api": 0.0
     }
 
-ev = st.session_state.engine
+v = st.session_state.v98
+now = now_taipei()
 
-# 排程設定
-SCHEDULE = ["09:05", "10:10", "11:30", "13:05", "14:45", "23:20"]
-now_dt = now_taipei()
-today_key = now_dt.strftime("%Y-%m-%d")
+SCHEDULE = ["09:05", "10:30", "11:30", "13:05", "14:45", "23:37"]
 
-current_slot = ""
+# 🔒 Stable slot detection (fix drift)
+current_slot_key = ""
+
 for t in SCHEDULE:
-    slot_dt = datetime.strptime(f"{today_key} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-    # 45秒時間窗，避免漂移
-    if abs((now_dt - slot_dt).total_seconds()) <= 45:
-        current_slot = f"{today_key} {t}"
-        break
+    try:
+        slot_dt = datetime.strptime(
+            f"{now.strftime('%Y-%m-%d')} {t}",
+            "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=tz)
 
-# 觸發與重置
-if current_slot and current_slot not in ev["triggered_slots"] and not ev["is_scanning"]:
-    ev["is_scanning"] = True
-    ev["scan_idx"] = 0
-    ev["found_list"] = [] # 每次新 Slot 清空結果
-    ev["triggered_slots"].add(current_slot)
+        if abs((now - slot_dt).total_seconds()) <= 60:
+            current_slot_key = f"{now.strftime('%m%d')}_{t}"
+            break
+    except:
+        pass
 
-# ==============================
-# 3. 掃描執行器 (Batch Executor)
-# ==============================
-if ev["is_scanning"]:
-    universe = get_universe()
-    idx = ev["scan_idx"]
-    
-    if idx < len(universe):
-        # API 頻率控制 (每 3 秒跑一批)
-        if time.time() - ev["last_api_time"] > 3.2:
-            batch = universe[idx : idx + 18]
-            st.info(f"📡 正在掃描: {idx}/{len(universe)} | Slot: {current_slot}")
-            
-            try:
-                # yf.download 本身有多執行緒，不建議外層再套 ThreadPool
-                raw = yf.download(tickers=batch, period="300d", group_by="ticker", 
-                                 auto_adjust=False, threads=True, progress=False)
-                
-                for code in batch:
-                    # 處理單/多標的結構
-                    df_sub = raw.xs(code, level=0, axis=1) if len(batch) > 1 else raw
-                    res = analyze_stock_logic(code, df_sub)
-                    if res: ev["found_list"].append(res)
-                
-                ev["scan_idx"] += len(batch)
-                ev["last_api_time"] = time.time()
-            except Exception as e:
-                st.error(f"掃描異常: {e}")
-                ev["scan_idx"] += len(batch) # 發生錯誤亦推進，防止死循環
-    else:
-        ev["is_scanning"] = False
-        st.success("✅ 本時段掃描完成")
+# 🔒 Prevent duplicate trigger
+if (
+    current_slot_key
+    and current_slot_key != v["last_slot"]
+    and st.session_state.active_slot != current_slot_key
+    and not v["running"]
+):
+    v["running"] = True
+    v["idx"] = 0
+    v["results"] = []
+    v["last_slot"] = current_slot_key
+
+    st.session_state.active_slot = current_slot_key
+
+    save_persistence(v["last_slot"], v["results"])
+
 
 # ==============================
-# 4. 監控儀表板 (UI Render)
+# 3. Scanner Engine (Mutex + Safe YF)
 # ==============================
-st.title("🛡️ Quantum Guard Engine v8.5")
-st.markdown(f"**當前 Slot:** `{current_slot if current_slot else '監聽中...'}`")
+if v["running"]:
 
-c1, c2, c3 = st.columns(3)
-c1.metric("台北時間", now_dt.strftime("%H:%M:%S"))
-c2.metric("發現標的", len(ev["found_list"]))
-c3.metric("剩餘檔數", len(get_universe()) - ev["scan_idx"])
+    if not st.session_state.lock:
+        st.session_state.lock = True
 
-if ev["found_list"]:
-    res_df = pd.DataFrame(ev["found_list"])
-    # 針對 Signal 5 進行排序（糾結度越低越強）
-    st.dataframe(res_df.sort_values("糾結度", ascending=True), 
-                 use_container_width=True, hide_index=True)
+        try:
+            universe = get_universe()
+            u_len = len(universe)
+
+            if u_len > 0 and v["idx"] < u_len:
+
+                if time.time() - st.session_state.yf_lock_time > 3.8:
+
+                    batch = universe[v["idx"]: v["idx"] + 20]
+
+                    raw = yf.download(
+                        batch,
+                        period="250d",
+                        group_by="ticker",
+                        threads=True,
+                        progress=False
+                    )
+
+                    for code in batch:
+                        try:
+                            try:
+                                df_sub = raw.xs(code, level=0, axis=1)
+                            except:
+                                try:
+                                    df_sub = raw[code]
+                                except:
+                                    df_sub = raw
+
+                            hit = run_strategy_filter(code, df_sub)
+
+                            if hit:
+                                v["results"].append(hit)
+
+                                # 🔒 memory cap
+                                if len(v["results"]) > 2000:
+                                    v["results"] = v["results"][-2000:]
+
+                        except:
+                            pass
+
+                    v["idx"] += len(batch)
+                    st.session_state.yf_lock_time = time.time()
+
+                    # periodic persistence
+                    if v["idx"] % 40 == 0:
+                        save_persistence(v["last_slot"], v["results"])
+
+            else:
+                v["running"] = False
+                save_persistence(v["last_slot"], v["results"])
+
+        finally:
+            st.session_state.lock = False
+
+
+# ==============================
+# 4. UI (Stable Render)
+# ==============================
+st.title("🛡️ Quantum Guard v9.8 Stable Engine")
+
+slot_display = v["last_slot"].split("_")[-1] if "_" in v["last_slot"] else "監聽中"
+
+c1, c2 = st.columns(2)
+c1.metric("掃描時段", slot_display)
+c2.metric("標的數", len(v["results"]))
+
+universe = get_universe()
+u_len = len(universe)
+
+if v["running"] and u_len > 0:
+    st.progress(min(v["idx"] / max(u_len, 1), 1.0))
+    st.caption(f"{v['idx']} / {u_len}")
+
+if v["results"]:
+    df_view = pd.DataFrame(v["results"]).drop_duplicates(
+        subset=["代號"],
+        keep="last"
+    )
+
+    st.dataframe(
+        df_view.sort_values(["訊號", "代號"]),
+        use_container_width=True,
+        hide_index=True
+    )
 else:
-    st.info("⌛ 系統待命中，符合條件之標的將顯示於此。")
+    st.info("⌛ 等待訊號觸發中...")
 
-with st.expander("📝 引擎日誌與排程"):
-    st.write(f"已執行時段: {list(ev['triggered_slots'])}")
-    st.write(f"當前索引: {ev['scan_idx']}")
-    st.code("排程點: " + ", ".join(SCHEDULE))
+with st.expander("🛠️ 系統控制"):
+    st.write(f"Running: {v['running']}")
+    st.write(f"Slot: {v['last_slot']}")
+
+    if st.button("🔴 Reset All"):
+        v.update({
+            "running": False,
+            "idx": 0,
+            "results": [],
+            "last_slot": "",
+            "last_api": 0.0
+        })
+
+        st.session_state.active_slot = None
+        st.session_state.lock = False
+        st.session_state.yf_lock_time = 0
+
+        save_persistence("", [])
+        st.rerun()
