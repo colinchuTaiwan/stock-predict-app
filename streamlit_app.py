@@ -70,8 +70,8 @@ def run_scan_logic(stock_codes, status_placeholder):
                           auto_adjust=False, threads=True, progress=False)
         
         for code in stock_codes:
-             st.sidebar.write({code})
-             st.write({code})
+            st.sidebar.write({code})
+            st.write({code})
             try:
                 df = raw[code].copy().dropna() if len(stock_codes) > 1 else raw.copy().dropna()
                 if len(df) < 200: continue
@@ -107,7 +107,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程與分批執行邏輯
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "18:58", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "14:30", "19:00", "23:00"]
 
 # 載入股票名單
 try:
