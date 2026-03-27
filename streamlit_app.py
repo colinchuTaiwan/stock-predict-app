@@ -102,75 +102,75 @@ def calc_indicators(df):
 
 def run_scan_logic(stock_codes, status_placeholder):
     all_found = []
-    batch_size = 50
-    pbar = st.progress(0)
+    status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
     
-    for i in range(0, len(stock_codes), batch_size):
-        batch = stock_codes[i:i+batch_size]
-        status_placeholder.info(f"⏳ 正在掃描批次: {i//batch_size + 1}")
-        try:
-            raw = yf.download(tickers=batch, period="300d", group_by="ticker", auto_adjust=False, threads=True, progress=False)
-            for code in batch:
-                try:
-                    df = raw[code].dropna() if len(batch) > 1 else raw.dropna()
-                    if len(df) < 200: continue
-                    ind = calc_indicators(df)
-                    last = ind.iloc[-1]
-                    
-                    price = round(last['Close'], 2)
-                    rk_p = round(last['RK_p'], 1)
-                    vol = int(last['Volume']/1000)
-                    
-                    # 提取均線數值 (假設 calc_indicators 已算出這些欄位)
-                    ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
-                    # 提取乖離/距離指標 (對應你提到的 ma20_b, ma60_b 等)
-                    ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100]}
+    try:
+        # 一次下載所有資料
+        raw = yf.download(tickers=stock_codes, period="300d", group_by="ticker", 
+                          auto_adjust=False, threads=True, progress=True)
+        
+        for code in stock_codes:
+            try:
+                # 取得該股資料並排除空值
+                df = raw[code].copy().dropna() if len(stock_codes) > 1 else raw.copy().dropna()
+                if len(df) < 200: continue
+                
+                ind = calc_indicators(df)
+                last = ind.iloc[-1]
+                
+                price = round(last['Close'], 2)
+                rk_p = round(last['RK_p'], 1)
+                vol = int(last['Volume']/1000)
+                
+                # 提取均線數值 (假設 calc_indicators 已算出這些欄位)
+                ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
+                # 提取乖離/距離指標 (對應你提到的 ma20_b, ma60_b 等)
+                ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100]}
 
-                    # --- 基礎過濾條件 ---
-                    # 1. 漲幅在 1%~7% 之間 2. 股價站上所有長線 (20, 60, 100, 200) 3. 有量
-                    basic_check = (
-                        1 < rk_p < 7 and 
-                        price > max(ma[20], ma[60], ma[100], ma[200]) and 
-                        vol > 100
-                    )
+                # --- 基礎過濾條件 ---
+                # 1. 漲幅在 1%~7% 之間 2. 股價站上所有長線 (20, 60, 100, 200) 3. 有量
+                basic_check = (
+                    1 < rk_p < 7 and 
+                    price > max(ma[20], ma[60], ma[100], ma[200]) and 
+                    vol > 100
+                )
 
-                    if basic_check:
-                        res_type = ""
+                if basic_check:
+                    res_type = ""
+                    
+                    # 【五線糾結判斷】 (5, 10, 20, 60, 100)
+                    ma5_list = [ma[5], ma[10], ma[20], ma[60], ma[100]]
+                    if (max(ma5_list) / min(ma5_list) < 1.08) and ma_b[100] < 0.1:
+                        res_type = "五線糾結"
                         
-                        # 【五線糾結判斷】 (5, 10, 20, 60, 100)
-                        ma5_list = [ma[5], ma[10], ma[20], ma[60], ma[100]]
-                        if (max(ma5_list) / min(ma5_list) < 1.08) and ma_b[100] < 0.1:
-                            res_type = "五線糾結"
-                            
-                        # 【四線糾結判斷】 (5, 10, 20, 60)
-                        elif (max(ma5_list[:4]) / min(ma5_list[:4]) < 1.08) and ma_b[60] < 0.1:
-                            res_type = "四線糾結"
-                            
-                        # 【三線糾結判斷】 (5, 10, 20)
-                        elif (max(ma5_list[:3]) / min(ma5_list[:3]) < 1.08) and ma_b[20] < 0.1:
-                            res_type = "三線糾結"
+                    # 【四線糾結判斷】 (5, 10, 20, 60)
+                    elif (max(ma5_list[:4]) / min(ma5_list[:4]) < 1.08) and ma_b[60] < 0.1:
+                        res_type = "四線糾結"
+                        
+                    # 【三線糾結判斷】 (5, 10, 20)
+                    elif (max(ma5_list[:3]) / min(ma5_list[:3]) < 1.08) and ma_b[20] < 0.1:
+                        res_type = "三線糾結"
 
-                        if res_type:
-                            all_found.append({
-                                "股票代號": code, 
-                                "價格": price, 
-                                "漲幅%": rk_p, 
-                                "成交量": vol, 
-                                "型態": res_type, 
-                                "時間": now_taipei().strftime("%H:%M:%S")
-                            })
-                except: continue
-        except: continue
-        pbar.progress(min((i+batch_size)/len(stock_codes), 1.0))
-    
+                
+                if res_type:
+                    all_found.append({
+                        "股票代號": code, 
+                        "價格": round(last['Close'], 2), 
+                        "型態": res_type, 
+                        "掃描時間": now_taipei().strftime("%H:%M:%S")
+                    })
+            except Exception:
+                continue
+    except Exception as e:
+        st.error(f"下載失敗: {e}")
+        
     status_placeholder.empty()
-    pbar.empty()
     return pd.DataFrame(all_found)
 
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:23", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:42", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -180,12 +180,16 @@ except:
     stock_list = ["2330.TW", "2454.TW", "2317.TW"]
     
 print(stock_list)
+
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
 if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
 
 # 自動掃描觸發
 curr_min = now_taipei().strftime("%H:%M")
+
+
+
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
@@ -199,6 +203,9 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     else:
         # 雲端沒資料才掃描
         new_res = run_scan_logic(stock_list, status_box)
+        5
+        print(new_res)
+        
         st.session_state.df_results = new_res
         st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
         
