@@ -116,27 +116,49 @@ def run_scan_logic(stock_codes, status_placeholder):
                     if len(df) < 200: continue
                     ind = calc_indicators(df)
                     last = ind.iloc[-1]
-                    pre = ind.iloc[-2]
+                    
+                    price = round(last['Close'], 2)
+                    rk_p = round(last['RK_p'], 1)
+                    vol = int(last['Volume']/1000)
+                    
+                    # 提取均線數值 (假設 calc_indicators 已算出這些欄位)
+                    ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
+                    # 提取乖離/距離指標 (對應你提到的 ma20_b, ma60_b 等)
+                    ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100]}
 
-                    price, rk_p, vol = round(last['Close'], 2), round(last['RK_p'], 1), int(last['Volume']/1000)
-                    ma = {w: last[f'ma{w}'] for w in [5,10,20,60,100,200]}
-                    ma_d = {w: last[f'ma{w}_d'] for w in [5,10,20,60,100,200]}
+                    # --- 基礎過濾條件 ---
+                    # 1. 漲幅在 1%~7% 之間 2. 股價站上所有長線 (20, 60, 100, 200) 3. 有量
+                    basic_check = (
+                        1 < rk_p < 7 and 
+                        price > max(ma[20], ma[60], ma[100], ma[200]) and 
+                        vol > 100
+                    )
 
-                    # 篩選邏輯
-                    if 1 < rk_p < 7 and price > last['pre_high'] and last['mv20'] > 100 and vol > 100:
-                        if price > ma[20] and price > ma[60] and all(v > 0 for v in ma_d.values()):
-                            res_type = ""
-                            mv = [ma[w] for w in [5,10,20,60,100,200] if ma[w] > 0]
-                            spread = max(mv)/min(mv) if mv else 999
+                    if basic_check:
+                        res_type = ""
+                        
+                        # 【五線糾結判斷】 (5, 10, 20, 60, 100)
+                        ma5_list = [ma[5], ma[10], ma[20], ma[60], ma[100]]
+                        if (max(ma5_list) / min(ma5_list) < 1.08) and ma_b[100] < 0.1:
+                            res_type = "五線糾結"
                             
-                            if spread < 1.06 and price > ma[5] > ma[10] > ma[20] > ma[60]: res_type = "多頭排列(強)"
-                            elif price > ma[5] > ma[10] > ma[20]: res_type = "三線多排"
+                        # 【四線糾結判斷】 (5, 10, 20, 60)
+                        elif (max(ma5_list[:4]) / min(ma5_list[:4]) < 1.08) and ma_b[60] < 0.1:
+                            res_type = "四線糾結"
                             
-                            if res_type:
-                                all_found.append({
-                                    "股票代號": code, "價格": price, "漲幅%": rk_p, 
-                                    "成交量": vol, "型態": res_type, "時間": now_taipei().strftime("%H:%M:%S")
-                                })
+                        # 【三線糾結判斷】 (5, 10, 20)
+                        elif (max(ma5_list[:3]) / min(ma5_list[:3]) < 1.08) and ma_b[20] < 0.1:
+                            res_type = "三線糾結"
+
+                        if res_type:
+                            all_found.append({
+                                "股票代號": code, 
+                                "價格": price, 
+                                "漲幅%": rk_p, 
+                                "成交量": vol, 
+                                "型態": res_type, 
+                                "時間": now_taipei().strftime("%H:%M:%S")
+                            })
                 except: continue
         except: continue
         pbar.progress(min((i+batch_size)/len(stock_codes), 1.0))
