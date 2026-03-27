@@ -135,7 +135,7 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
     else:
         # 2. 雲端沒資料，開始分批掃描
         st.session_state.df_results = pd.DataFrame() # 清空舊資料
-        batch_size = 10 #50,100不能下載,10可以
+        batch_size = 20
         total_stocks = len(stock_list)
         #st.write(stock_list)
         #st.sidebar.write(stock_list)
