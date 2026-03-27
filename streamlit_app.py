@@ -1,16 +1,4 @@
-'''
-1.解除「Rerun 風暴」：
-我們移除了 st.rerun()。現在利用 st_autorefresh 每 3 秒一次的自然重整來作為驅動輪（Driving Wheel）。這樣不會造成 CPU 瞬間過載，也避免了 Streamlit Cloud 對高頻 Rerun 的限制。
 
-2.API 節流 (Throttling)：
-引入了 last_api_time。即使 UI 每秒刷 10 次，核心抓取邏輯也會強行限制在 1.5 秒以上一次請求，這是避免被 Yahoo IP Ban 的最重要防線。
-
-3.記憶體管理 (Buffer Clipping)：
-存檔前強制執行 found_list[-500:]，確保 GitHub 的 JSON 檔案不會無限制膨脹導致讀寫崩潰。
-
-4.強化的 yfinance Retry：
-加入了 for _ in range(2) 循環，處理偶發性的 Network Timeout，這對於在雲端伺服器運行的穩定性提升巨大。
-'''
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -193,3 +181,5 @@ with st.sidebar:
         df, ut = sync_github(None, "download")
         st.session_state.df_results = df
         st.success(f"同步成功: {ut}")
+    st.subheader("📅 自動掃描點")
+    st.code("\n".join(SCHEDULE_TIMES))0
