@@ -143,9 +143,10 @@ def run_scan_logic(stock_codes, status_placeholder):
 
                 if basic_check:
                     print("code:",code,",price:",price,",ma5:",ma[5])
+                    st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
                     st.toast(f"✅ 找到符合標的: {code}", icon="📈")
                     #st.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
-                    st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
+                    #st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
                     res_type = ""
                     
                     # 【五線糾結判斷】 (5, 10, 20, 60, 100)
@@ -191,10 +192,12 @@ except:
     
 #print(stock_list)
 print("0001")
+st.sidebar.write(f"001")
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
 if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
 print("0002")
+st.sidebar.write(f"002")
 # 自動掃描觸發
 curr_min = now_taipei().strftime("%H:%M")
 print(curr_min)
@@ -202,14 +205,19 @@ st.sidebar.write(f"🕒 系統當前分鐘: {curr_min}")
 
 
 print("0003")
+st.sidebar.write(f"003")
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
+    
     print("0004")
+    st.sidebar.write(f"004")
+    
     st.session_state.last_run_min = curr_min
     status_box = st.empty()
     
     # 優先嘗試從雲端同步（避免多個用戶開啟網頁導致重複掃描）
     df_cloud, time_cloud = load_cache_from_github()
     if time_cloud.startswith(now_taipei().strftime("%Y-%m-%d")):
+        st.sidebar.write(f"005")
         st.session_state.df_results = df_cloud
         st.session_state.last_update = time_cloud
         status_box.success("☁️ 已從 GitHub 同步今日最新數據")
@@ -218,7 +226,9 @@ if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
         new_res = run_scan_logic(stock_list, status_box)
         
         print(new_res)
-        st.sidebar.write(f" 資料: {new_res}")        
+        st.sidebar.write(f"006")
+        st.sidebar.write(f" 資料: {new_res}")   
+        
         st.session_state.df_results = new_res
         st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
         
