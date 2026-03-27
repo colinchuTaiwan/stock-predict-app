@@ -170,7 +170,7 @@ def run_scan_logic(stock_codes, status_placeholder):
 # ==============================
 # 3. 排程設定與邏輯控制
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:15", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "17:23", "20:00", "23:00"]
 
 # 載入代碼
 try:
@@ -178,7 +178,8 @@ try:
         stock_list = json.load(f)['stocks']
 except:
     stock_list = ["2330.TW", "2454.TW", "2317.TW"]
-
+    
+print(stock_list)
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
 if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
