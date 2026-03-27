@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -105,7 +106,7 @@ def analyze_stock_logic(code, df):
         tangle_ratio = max(ma_vals) / min(ma_vals)
         above_all = all(price > mas[f"ma{m}"] for m in [20, 60, 100, 200])
         
-        if tangle_ratio < 1.08 and above_all:
+        if tangle_ratio < 1.06 and above_all:
             if bias['ma200_b'] < 0.1: signal = "Signal 5: 六線糾結突破"
             elif bias['ma100_b'] < 0.1: signal = "Signal 6: 五線糾結突破"
             elif bias['ma60_b'] < 0.1: signal = "Signal 7: 四線糾結突破"
@@ -114,7 +115,7 @@ def analyze_stock_logic(code, df):
         # 2. 多頭排列模式
         elif mas['ma5'] > mas['ma20'] > mas['ma60'] > mas['ma100'] > mas['ma200']:
             slopes = sum(1 for m in ma_periods if mas[f"ma{m}"] > pre_mas[f"ma{m}"])
-            if slopes >= 5: signal = "Signal 1: 五線全揚"
+            if slopes >= 5: signal = "Signal 1: 五線多排"
             elif slopes == 4: signal = "Signal 2: 四線多排"
             elif slopes == 3: signal = "Signal 3: 三線多排"
             else: signal = "Signal 4: 二線多排"
@@ -140,7 +141,7 @@ if "v10" not in st.session_state:
 
 v = st.session_state.v10
 now = now_taipei()
-SCHEDULE = ["09:05", "10:30", "11:30", "13:05", "14:45", "23:43"]
+SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "00:04"]
 
 # 🔒 穩定排程點判定
 current_slot_key = ""
@@ -192,7 +193,7 @@ if v["running"] and not st.session_state.lock:
 # ==============================
 # 4. UI 視覺展示
 # ==============================
-st.title("🛡️ Quantum Guard v10.0")
+st.title("🛡️ 多頭趨勢選股策略實驗室 v10.0")
 
 # 顯示排程資訊與最後更新
 st.code("排程點: " + ", ".join(SCHEDULE))
