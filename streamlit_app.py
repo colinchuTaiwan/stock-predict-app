@@ -189,7 +189,7 @@ def analyze_stock_logic(code, df):
             "股票代號": code,
             "價格": round(price, 2),
             "漲幅%": round(rk, 1),
-            "訊號": signal,
+            "型態": signal,
             "時間": now_taipei().strftime("%H:%M")
         }
 
@@ -215,7 +215,7 @@ now = now_taipei()
 # ==============================
 # 6. 排程觸發
 # ==============================
-SCHEDULE = ["08:40", "09:30", "10:50", "12:20", "13:15", "02:47"]
+SCHEDULE = ["08:40", "09:30", "10:50", "12:20", "13:15", "02:49"]
 
 current_slot_key = ""
 for t in SCHEDULE:
