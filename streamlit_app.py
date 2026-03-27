@@ -6,318 +6,181 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 時區與秒級刷新
+# 0. 時區與刷新設定
 # ==============================
-print("000")
 tz = timezone(timedelta(hours=8))
 def now_taipei():
     return datetime.now(tz)
 
-# 每秒刷新一次前端，確保排程檢查精準
+# 每秒刷新一次確保檢查時間點精準
 st_autorefresh(interval=1000, key="sec_refresh")
 
 # ==============================
-# 1. GitHub 雲端核心邏輯
+# 1. GitHub 雲端存取邏輯
 # ==============================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
 GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
 CACHE_FILE = st.secrets.get("GITHUB_FILE", "scan_cache.json")
-CACHE_PATH = "scan_cache.json"
 
 def upload_to_github(content_dict, path=CACHE_FILE):
-    print("upload_to_github")
-    """通用 GitHub 上傳函數，支援路徑自動切換"""
     if not GITHUB_TOKEN or not GITHUB_REPO: return False
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        
-        # 1. 取得舊檔案 SHA
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         res = requests.get(url, headers=headers, timeout=5)
         sha = res.json().get("sha") if res.status_code == 200 else None
-        
-        # 2. 準備內容
         content_json = json.dumps(content_dict, ensure_ascii=False, indent=2)
-        # 確保使用 utf-8 編碼
         content_b64 = base64.b64encode(content_json.encode('utf-8')).decode('utf-8')
-        
-        data = {
-            "message": f"🤖 Auto-update: {now_taipei().strftime('%Y-%m-%d %H:%M')}",
-            "content": content_b64,
-            "branch": "main"
-        }
+        data = {"message": f"🤖 Auto-update: {now_taipei().strftime('%Y-%m-%d %H:%M')}", "content": content_b64, "branch": "main"}
         if sha: data["sha"] = sha
-        
-        # 3. 寫入
-        put_res = requests.put(url, headers=headers, json=data, timeout=10)
-        return put_res.status_code in [200, 201]
-    except Exception as e:
-        st.sidebar.error(f"GitHub 上傳失敗 ({path}): {e}")
-        return False
+        requests.put(url, headers=headers, json=data, timeout=10)
+        return True
+    except: return False
 
 def load_cache_from_github():
-    print("load_cache_from_github")
-    """從 GitHub API 讀取最新掃描快取，穩定版"""
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return pd.DataFrame(), "未知"
-
+    if not GITHUB_TOKEN or not GITHUB_REPO: return pd.DataFrame(), "未知"
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{CACHE_FILE}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-
     try:
         res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code != 200:
-            print(f"GitHub 回傳非200: {res.status_code}")
-            return pd.DataFrame(), "讀取失敗"
-
-        json_res = res.json()
-        content_b64 = json_res.get("content", "")
-        if not content_b64:
-            return pd.DataFrame(), "空內容"
-
-        # 移除換行符號再解碼
-        content_b64 = content_b64.replace("\n", "")
-        data = json.loads(base64.b64decode(content_b64).decode('utf-8'))
-
+        if res.status_code != 200: return pd.DataFrame(), "讀取失敗"
+        data = json.loads(base64.b64decode(res.json().get("content", "").replace("\n", "")).decode('utf-8'))
         return pd.DataFrame(data.get("data", [])), data.get("last_update", "尚未更新")
-    except Exception as e:
-        print(f"讀取 GitHub 失敗: {e}")
-        return pd.DataFrame(), "讀取失敗"
+    except: return pd.DataFrame(), "讀取失敗"
 
 # ==============================
 # 2. 技術指標與掃描引擎
 # ==============================
 def calc_indicators(df):
-  
     df = df.copy()
     close = df['Close']
     for w in [5,10,20,60,100,200]:
         df[f"ma{w}"] = close.rolling(w).mean()
-        df[f"ma{w}_d"] = df[f"ma{w}"].diff()
         df[f"ma{w}_b"] = (close - df[f"ma{w}"])/df[f"ma{w}"]
-    df["pre_high"] = df['High'].shift(1)
-    df["pre_vol"] = df['Volume'].shift(1)
-    df["mv20"] = df['Volume'].rolling(20).mean()/1000
     df["RK_p"] = (close - df['Open'])*100/df['Open']
     return df
 
 def run_scan_logic(stock_codes, status_placeholder):
-    print(" run_scan_logic")
-    st.sidebar.write(" run_scan_logic")
-    st.write("run_scan_logic")
-    st.info("run_scan_logic")
-    
-    all_found = []
-    status_placeholder.info(f"🚀 開始全量掃描 {len(stock_codes)} 支標的...")
-    
+    found_in_chunk = []
     try:
-        # 一次下載所有資料
+        # 下載這 10 檔的資料
         raw = yf.download(tickers=stock_codes, period="300d", group_by="ticker", 
-                          auto_adjust=False, threads=True, progress=True)
+                          auto_adjust=False, threads=True, progress=False)
         
         for code in stock_codes:
             try:
-                # 取得該股資料並排除空值
                 df = raw[code].copy().dropna() if len(stock_codes) > 1 else raw.copy().dropna()
                 if len(df) < 200: continue
                 
                 ind = calc_indicators(df)
                 last = ind.iloc[-1]
-                
-                price = round(last['Close'], 2)
-                rk_p = round(last['RK_p'], 1)
-                vol = int(last['Volume']/1000)
-                
-                # 提取均線數值 (假設 calc_indicators 已算出這些欄位)
+                price, rk_p, vol = round(last['Close'], 2), round(last['RK_p'], 1), int(last['Volume']/1000)
                 ma = {w: last[f'ma{w}'] for w in [5, 10, 20, 60, 100, 200]}
-                # 提取乖離/距離指標 (對應你提到的 ma20_b, ma60_b 等)
                 ma_b = {w: last.get(f'ma{w}_b', 0) for w in [20, 60, 100]}
 
-                # --- 基礎過濾條件 ---
-                # 1. 漲幅在 1%~7% 之間 2. 股價站上所有長線 (20, 60, 100, 200) 3. 有量
-                basic_check = (
-                    1 < rk_p < 7 and 
-                    price > max(ma[20], ma[60], ma[100], ma[200]) and 
-                    vol > 100
-                )
-
-                if basic_check:
-                    print("code:",code,",price:",price,",ma5:",ma[5])
-                    st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
-                    st.info({code})
-                    #st.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
-                    #st.sidebar.write(f"🎯 偵測到標的：**{code}** | 價格：{price} | 5MA：{ma[5]:.2f}")
+                # 基礎條件：漲幅 1~7%、站上長線、有量
+                if (1 < rk_p < 7 and price > max(ma[20], ma[60], ma[100], ma[200]) and vol > 100):
                     res_type = ""
+                    ma_list = [ma[5], ma[10], ma[20], ma[60], ma[100]]
                     
-                    # 【五線糾結判斷】 (5, 10, 20, 60, 100)
-                    ma5_list = [ma[5], ma[10], ma[20], ma[60], ma[100]]
-                    if (max(ma5_list) / min(ma5_list) < 1.08) and ma_b[100] < 0.1:
+                    if (max(ma_list) / min(ma_list) < 1.08) and ma_b[100] < 0.1:
                         res_type = "五線糾結"
-                        
-                    # 【四線糾結判斷】 (5, 10, 20, 60)
-                    elif (max(ma5_list[:4]) / min(ma5_list[:4]) < 1.08) and ma_b[60] < 0.1:
+                    elif (max(ma_list[:4]) / min(ma_list[:4]) < 1.08) and ma_b[60] < 0.1:
                         res_type = "四線糾結"
-                        
-                    # 【三線糾結判斷】 (5, 10, 20)
-                    elif (max(ma5_list[:3]) / min(ma5_list[:3]) < 1.08) and ma_b[20] < 0.1:
+                    elif (max(ma_list[:3]) / min(ma_list[:3]) < 1.08) and ma_b[20] < 0.1:
                         res_type = "三線糾結"
 
-                
-                if res_type:
-                    all_found.append({
-                        "股票代號": code, 
-                        "價格": round(last['Close'], 2), 
-                        "型態": res_type, 
-                        "掃描時間": now_taipei().strftime("%H:%M:%S")
-                    })
-            except Exception:
-                continue
+                    if res_type:
+                        found_in_chunk.append({
+                            "股票代號": code, "價格": price, "漲幅%": rk_p, 
+                            "型態": res_type, "掃描時間": now_taipei().strftime("%H:%M:%S")
+                        })
+            except: continue
     except Exception as e:
-        st.error(f"下載失敗: {e}")
-        
-    status_placeholder.empty()
-    return pd.DataFrame(all_found)
+        st.error(f"批次下載失敗: {e}")
+    return found_in_chunk
 
 # ==============================
-# 3. 排程設定與邏輯控制
+# 3. 排程與分批執行邏輯
 # ==============================
-SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:37", "20:00", "23:00"]
+SCHEDULE_TIMES = ["09:30", "10:30", "11:20", "12:20", "13:15", "18:50", "20:00", "23:00"]
 
-# 載入代碼
+# 載入股票名單
 try:
     with open("db/taiwan_Full.json", "r", encoding="utf-8") as f:
         stock_list = json.load(f)['stocks']
 except:
-    stock_list = ["2330.TW", "2454.TW", "2317.TW"]
-    
-#print(stock_list)
-print("0001")
-st.sidebar.write(f"001")
+    stock_list = ["2330.TW", "2454.TW"]
+
+# 初始化 Session State
 if "df_results" not in st.session_state: st.session_state.df_results = pd.DataFrame()
 if "last_update" not in st.session_state: st.session_state.last_update = "尚未掃描"
 if "last_run_min" not in st.session_state: st.session_state.last_run_min = ""
-print("0002")
-st.sidebar.write(f"002")
-# 自動掃描觸發
+
 curr_min = now_taipei().strftime("%H:%M")
-print(curr_min)
-st.sidebar.write(f"🕒 系統當前分鐘: {curr_min}")
 
-
-print("0003")
-st.sidebar.write(f"003")
-st.write("003")
-st.info("003")
+# --- 自動掃描觸發區 ---
 if curr_min in SCHEDULE_TIMES and st.session_state.last_run_min != curr_min:
-    
-    print("0004")
-    st.sidebar.write(f"004")
-    st.write("004")
-    st.info("004")
-    
     st.session_state.last_run_min = curr_min
-    status_box = st.empty()
     
-    # 優先嘗試從雲端同步（避免多個用戶開啟網頁導致重複掃描）
+    # 1. 嘗試從 GitHub 同步今日已完成的結果
     df_cloud, time_cloud = load_cache_from_github()
     if time_cloud.startswith(now_taipei().strftime("%Y-%m-%d")):
-        
-        st.sidebar.write(f"005")
-        st.write("005")
-        st.info("005")
-        
         st.session_state.df_results = df_cloud
         st.session_state.last_update = time_cloud
-        status_box.success("☁️ 已從 GitHub 同步今日最新數據")
     else:
-        # 雲端沒資料才掃描
-        new_res = run_scan_logic(stock_list, status_box)
+        # 2. 雲端沒資料，開始分批掃描
+        st.session_state.df_results = pd.DataFrame() # 清空舊資料
+        batch_size = 10
+        total_stocks = len(stock_list)
         
-        print(new_res)
-        st.sidebar.write(f"006")
-        st.write("006")
-        st.info("006")
-        st.sidebar.write(f" 資料: {new_res}")   
-        st.info(new_res)
+        with st.status(f"🚀 啟動全量掃描 ({total_stocks} 檔)...", expanded=True) as status:
+            all_found = []
+            for i in range(0, total_stocks, batch_size):
+                batch = stock_list[i : i + batch_size]
+                status.write(f"正在檢查第 {i+1} ~ {min(i+batch_size, total_stocks)} 檔...")
+                
+                # 執行掃描
+                chunk_results = run_scan_logic(batch, status)
+                
+                if chunk_results:
+                    all_found.extend(chunk_results)
+                    # 即時更新顯示表格
+                    st.session_state.df_results = pd.DataFrame(all_found)
+                
+            st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
+            status.update(label="✅ 掃描完成！", state="complete")
         
-        st.session_state.df_results = new_res
-        st.session_state.last_update = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 存檔至 GitHub (快取 + 歷史)
-        cache_data = {"data": new_res.to_dict(orient="records"), "last_update": st.session_state.last_update}
+        # 3. 掃描結束後上傳 GitHub
+        cache_data = {"data": st.session_state.df_results.to_dict(orient="records"), "last_update": st.session_state.last_update}
         upload_to_github(cache_data)
         upload_to_github(cache_data, path=f"history/{now_taipei().strftime('%Y-%m-%d')}.json")
-    
-    st.sidebar.write(f"0007")
-    st.info("007")
-    st.write("007")
-    
-    time.sleep(2)
-    status_box.empty()
-    st.rerun()
+        st.rerun()
 
 # ==============================
 # 4. 前端介面
 # ==============================
-st.title("📊 台股多頭排列融合掃描器 v3")
-print("📊 台股多頭排列融合掃描器 v3")
-
+st.title("📊 台股多頭排列融合掃描器 v3.1")
 c1, c2, c3 = st.columns(3)
 c1.metric("⏰ 台北時間", now_taipei().strftime("%H:%M:%S"))
 c2.metric("📡 最後更新", st.session_state.last_update)
-c3.metric("📈 監控數量", len(stock_list))
+c3.metric("📈 訊號數量", len(st.session_state.df_results))
 
 st.divider()
 
 if not st.session_state.df_results.empty:
     st.dataframe(st.session_state.df_results.sort_values("漲幅%", ascending=False), use_container_width=True)
 else:
-    st.info("⌛ 目前尚無訊號。系統將在排程時間自動執行掃描。")
+    st.info("⌛ 目前尚無訊號。系統將在排程時間自動執行分批掃描。")
 
 with st.sidebar:
     st.header("⚙️ 控制面板")
-    
-    # --- 手動同步按鈕 ---
     if st.button("☁️ 手動同步雲端", use_container_width=True):
-        with st.spinner("正在連線 GitHub..."):
-            df_cloud, time_cloud = load_cache_from_github()
-            
-            # 檢查是否真的讀取成功 (df_cloud 不應為空，且 time_cloud 不應是 "讀取失敗")
-            if time_cloud != "讀取失敗" and not df_cloud.empty:
-                st.session_state.df_results = df_cloud
-                st.session_state.last_update = time_cloud
-                st.toast("✅ 雲端同步成功！", icon="🎉")
-                time.sleep(1) # 給使用者看一眼彈窗的時間
-                st.rerun()
-            elif time_cloud != "讀取失敗" and df_cloud.empty:
-                st.warning("☁️ 雲端檔案存在，但目前沒有符合條件的股票訊號。")
-                st.session_state.last_update = time_cloud
-            else:
-                st.error("❌ 同步失敗：請檢查 GitHub Token 或 Repository 設定。")
-                st.toast("同步失敗，請檢查側邊欄錯誤訊息", icon="⚠️")
-
-    st.divider()
-    
-    # --- 顯示排程資訊 ---
-    st.subheader("📅 自動掃描排程")
-    st.caption("系統將在以下台北時間自動執行：")
-    # 將排程時間漂亮的顯示出來
-    st.code(", ".join(SCHEDULE_TIMES))
-    
-    st.divider()
-    
-    # --- 重置按鈕 ---
-    if st.button("🗑️ 清空本地快取紀錄", help="清空目前網頁看到的結果，但不影響雲端檔案"):
-        st.session_state.seen_keys = set()
-        st.session_state.df_results = pd.DataFrame()
-        st.session_state.last_update = "已清空"
-        st.toast("本地紀錄已清除")
+        df_cloud, time_cloud = load_cache_from_github()
+        st.session_state.df_results = df_cloud
+        st.session_state.last_update = time_cloud
         st.rerun()
-
     
-    
-    st.write("📅 排程時間:", SCHEDULE_TIMES)
-    st.caption("v3 版：穩定同步與自動避錯機制")
+    st.subheader("📅 排程時間")
+    st.code(", ".join(SCHEDULE_TIMES))
+    st.caption("分批模式：每 10 檔一組，降低系統負擔")
