@@ -57,7 +57,7 @@ def save_persistence(last_slot, results):
     except: pass
 
 # 5秒心跳自動重整
-st_autorefresh(interval=1000, key="v10_heartbeat")
+st_autorefresh(interval=3000, key="v10_heartbeat")
 
 # ==============================
 # 1. 核心策略引擎 (策略邏輯更新)
@@ -149,7 +149,7 @@ if "v10" not in st.session_state:
 
 v = st.session_state.v10
 now = now_taipei()
-SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "00:35"]
+SCHEDULE = ["08:40", "9:30", "10:50", "12:20", "13:15", "15:00", "00:40"]
 
 # 🔒 穩定排程點判定
 current_slot_key = ""
@@ -177,7 +177,7 @@ if v["running"] and not st.session_state.lock:
         u_len = len(universe)
         if u_len > 0 and v["idx"] < u_len:
             if time.time() - st.session_state.yf_lock_time > 3.5:
-                batch = universe[v["idx"]: v["idx"] + 10]
+                batch = universe[v["idx"]: v["idx"] + 20]
                 raw = yf.download(batch, period="250d", group_by="ticker", threads=True, progress=False)
                 
                 for code in batch:
