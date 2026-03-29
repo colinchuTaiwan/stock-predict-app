@@ -103,7 +103,7 @@ if remote_db:
 
 db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"last_slot":"", "list":[], "status":"idle"}
 now = now_taipei()
-SCHEDULE = ["09:00", "09:30", "10:30", "11:30", "12:30", "13:15", "01:16"]
+SCHEDULE = ["09:00", "09:30", "10:30", "11:30", "12:30", "13:15", "01:18"]
 
 # B. 時段觸發
 current_slot = ""
