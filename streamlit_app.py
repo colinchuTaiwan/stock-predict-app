@@ -72,6 +72,7 @@ def calc_indicators(df):
 # 3. 策略邏輯 (你的邏輯修正版)
 # ==============================
 def analyze_stock_logic(code, df):
+    st.write("analyze_stock_logic(")
     try:
         if df is None or df.empty: return None
         required_cols = ['Open', 'Close', 'High', 'Volume']
