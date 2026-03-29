@@ -178,6 +178,7 @@ SCHEDULE = ["09:00", "09:30", "10:30", "11:30", "12:30", "13:15", "01:30"]
 
 # 時段匹配
 current_slot = ""
+
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
     if 0 <= (now - slot_dt).total_seconds() <= 300:
@@ -217,6 +218,7 @@ if brain.is_scanning:
 
 # --- 前端展示 ---
 st.title("🛡️ 趨勢選股系統 v13.5")
+print(st.title)
 remote_lock, _ = GitHubEngine.fetch_remote(LOCK_PATH)
 if remote_lock:
     st.info(f"⚡ 跨伺服器任務執行中: `{remote_lock['slot']}` | 節點: `{remote_lock['worker']}`")
