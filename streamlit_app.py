@@ -1,325 +1,166 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import json, os, time
+import json, os, time, threading, requests, base64, socket
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 全域設定
+# 0. 雲端環境變數與路徑
 # ==============================
-STATE_FILE = "db/scan_results.json"
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
+REPO_NAME = st.secrets.get("REPO_NAME")
+DB_PATH = "db/scan_results.json"
+LOCK_PATH = "db/scan.lock.json"
+STORAGE_DIR = "/tmp/stock_app"
+LOCAL_STATE = os.path.join(STORAGE_DIR, "scan_results.json")
+
 tz = timezone(timedelta(hours=8))
-
-def now_taipei():
-    return datetime.now(tz)
-
-# Session 狀態初始化
-st.session_state.setdefault("lock", False)
-st.session_state.setdefault("active_slot", None)
-st.session_state.setdefault("yf_lock_time", 0)
+def now_taipei(): return datetime.now(tz)
+def get_worker_id(): return f"{socket.gethostname()}-{os.getpid()}"
 
 # ==============================
-# 1. 股票池
+# 1. 帶快取的 GitHub 同步工具 (解決 Rate Limit)
 # ==============================
-@st.cache_data(ttl=3600)
-def get_universe():
-    try:
-        if not os.path.exists("db/taiwan_Full.json"):
-            return []
-        with open("db/taiwan_Full.json", "r", encoding="utf-8-sig") as f:
-            return json.load(f).get("stocks", [])
-    except:
-        return []
+class GitHubEngine:
+    @staticmethod
+    @st.cache_data(ttl=15) # 🔥 15秒內不重複請求 GitHub，保護 API Quota
+    def fetch_remote(path):
+        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            data = res.json()
+            content = json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+            return content, data["sha"]
+        return None, None
 
-# ==============================
-# 2. JSON 永續（Atomic）
-# ==============================
-def load_persistence():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {"last_slot": "", "list": []}
+    @staticmethod
+    def commit_file(path, content_dict, message, sha=None):
+        """寫入 GitHub (CAS 機制)"""
+        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        content_bytes = json.dumps(content_dict, ensure_ascii=False).encode("utf-8")
+        payload = {"message": message, "content": base64.b64encode(content_bytes).decode("utf-8")}
+        if sha: payload["sha"] = sha
+        res = requests.put(url, headers=headers, json=payload)
+        return res.status_code in [200, 201]
 
-def save_persistence(last_slot, results):
-    try:
-        os.makedirs("db", exist_ok=True)
-        tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"last_slot": last_slot, "list": results}, f, ensure_ascii=False)
-        os.replace(tmp, STATE_FILE)
-    except:
-        pass
-
-# ==============================
-# 3. 指標計算
-# ==============================
-def calc_indicators(df):
-    df = df.copy()
-    c = df['Close']
-
-    for w in [5, 10, 20, 60, 100, 200]:
-        df[f"ma{w}"] = c.rolling(w).mean()
-        df[f"ma{w}_b"] = (c - df[f"ma{w}"]) / df[f"ma{w}"]
-
-    df["RK_p"] = (c - df['Open']) * 100 / df['Open']
-    return df
+    @staticmethod
+    def delete_lock(sha):
+        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{LOCK_PATH}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        res = requests.delete(url, headers=headers, json={"message": "Release Lock", "sha": sha})
+        return res.status_code == 200
 
 # ==============================
-# 4. 單股策略引擎（核心修正）
+# 2. 分散式任務管理器 (Double-Check Locking)
 # ==============================
-def analyze_stock_logic(code, df):
-    try:
-        if df is None or df.empty:
-            return None
+@st.cache_resource
+class DistributedBrain:
+    def __init__(self):
+        self.mu = threading.Lock()
+        self.is_scanning = False
+        self.current_idx = 0
+        self.temp_results = []
 
-        # 🔥 必要欄位檢查
-        required_cols = ['Open', 'Close', 'High', 'Volume']
-        if not all(col in df.columns for col in required_cols):
-            return None
+    def try_lock(self, slot):
+        with self.mu:
+            if self.is_scanning: return False
+            
+            # 🔥 Step 1: 第一次 GET 檢查
+            remote_lock, sha = GitHubEngine.fetch_remote(LOCK_PATH)
+            if remote_lock and time.time() - remote_lock.get("ts", 0) < 600:
+                return False 
+            
+            # 🔥 Step 2: 嘗試奪鎖 (利用 GitHub 的 SHA 進行原子操作)
+            # 如果在 GET 與 PUT 之間有人先改了鎖，GitHub 會回傳 409 Conflict
+            new_lock = {"slot": slot, "ts": time.time(), "worker": get_worker_id()}
+            success = GitHubEngine.commit_file(LOCK_PATH, new_lock, f"Lock: {slot}", sha)
+            
+            if success:
+                self.is_scanning, self.current_idx, self.temp_results = True, 0, []
+                return True
+            return False
 
-        df = df.dropna()
-        if len(df) < 210:
-            return None
+brain = DistributedBrain()
 
-        ind = calc_indicators(df)
-
-        # 🔥 防止 rolling 尚未生成
-        if ind.iloc[-1].isnull().any():
-            return None
-
-        last = ind.iloc[-1]
-        prev = ind.iloc[-2]
-
-        price = last['Close']
-        open_ = last['Open']
-        vol = last['Volume'] / 1000
-
-        pre_close = prev['Close']
-        pre_high = prev['High']
-        pre_vol = prev['Volume'] / 1000
-
-        rk = (price - open_) * 100 / open_
-
-        ma_keys = [5,10,20,60,100,200]
-
-        # 🔥 安全取值
-        ma = {}
-        pre_ma = {}
-        for w in ma_keys:
-            key = f"ma{w}"
-            if key not in last or key not in prev:
-                return None
-            ma[w] = last[key]
-            pre_ma[w] = prev[key]
-
-        ma_b = {}
-        for w in [20,60,100,200]:
-            key = f"ma{w}_b"
-            ma_b[w] = last[key] if key in last else 0
-
-        ma_d = {w: ma[w] - pre_ma[w] for w in ma}
-
-        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
-
-        # =====================
-        # 條件
-        # =====================
-        if not (1 < rk < 7):
-            return None
-
-        cond_basic = (
-            (price > pre_high and price > ma[5]) and
-            (mv20 > 100 and vol > 100) and
-            (price < 200) and
-            (vol > pre_vol * 1.5)
-        )
-
-        if not cond_basic:
-            return None
-
-        is_breakout = (
-            pre_close < pre_ma[5] or
-            pre_close < pre_ma[10] or
-            pre_close < pre_ma[20] or
-            pre_close < pre_ma[60]
-        )
-
-        if not is_breakout:
-            return None
-
-        signal = None
-
-        # ===== 多排 =====
-        if ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
-            up_count = sum(1 for w in [5,20,60,100,200] if ma_d[w] > 0)
-
-            if up_count >= 5:
-                signal = "五線多排"
-            elif up_count == 4:
-                signal = "四線多排"
-            elif up_count == 3:
-                signal = "三線多排"
-            elif up_count == 2:
-                signal = "二線多排"
-
-        # ===== 糾結 =====
-        ma_list = list(ma.values())
-
-        if min(ma_list) == 0:
-            return None
-
-        if all(price > ma[w] for w in [20,60,100,200]):
-            if (max(ma_list)/min(ma_list) < 1.08) and ma_b[200] < 0.1:
-                signal = "六線糾結"
-            elif (max(ma_list[:5])/min(ma_list[:5]) < 1.08) and ma_b[100] < 0.15:
-                signal = "五線糾結"
-            elif (max(ma_list[:4])/min(ma_list[:4]) < 1.08) and ma_b[60] < 0.15:
-                signal = "四線糾結"
-            elif (max(ma_list[:3])/min(ma_list[:3]) < 1.08) and ma_b[20] < 0.15:
-                signal = "三線糾結"
-
-        if not signal:
-            return None
-
-        return {
-            "股票代號": code,
-            "價格": round(price, 2),
-            #"漲幅%": round(rk, 1),
-            "型態": signal,
-            "時間": now_taipei().strftime("%H:%M")
-        }
-
-    except Exception as e:
-        # 🔥 Debug 用（可開關）
-        print(f"[ERROR] {code}: {e}")
-        return None
 # ==============================
-# 5. 初始化狀態
+# 3. 主程序邏輯
 # ==============================
-if "v10" not in st.session_state:
-    db = load_persistence()
-    st.session_state.v10 = {
-        "running": False,
-        "idx": 0,
-        "results": db["list"],
-        "last_slot": db["last_slot"]
-    }
+st.set_page_config(page_title="v13.5 分散式穩定版", layout="wide")
+st_autorefresh(interval=5000, key="global_refresh")
 
-v = st.session_state.v10
+# A. 全域同步：檢查遠端 DB 是否比本地新
+remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
+if remote_db:
+    # 讀取本地快取進行比較
+    local_db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"ts": 0}
+    if remote_db.get("ts", 0) > local_db.get("ts", 0):
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        with open(LOCAL_STATE, "w") as f: json.dump(remote_db, f)
+        st.toast("🔄 已同步最新雲端結果")
+
+db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"last_slot":"", "list":[], "status":"idle"}
 now = now_taipei()
+SCHEDULE = ["09:00", "09:30", "10:30", "11:30", "12:30", "13:15"]
 
-# ==============================
-# 6. 排程觸發
-# ==============================
-SCHEDULE = ["08:40", "09:30", "10:50", "12:20", "13:15", "18:30", "00:39"]
-
-current_slot_key = ""
+# B. 時段觸發
+current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-    if abs((now - slot_dt).total_seconds()) <= 60:
-        current_slot_key = f"{now.strftime('%m%d')}_{t}"
+    if 0 <= (now - slot_dt).total_seconds() <= 300:
+        current_slot = f"{now.strftime('%m%d')}_{t}"
         break
 
-if current_slot_key and current_slot_key != v["last_slot"] and not v["running"]:
-    v["running"] = True
-    v["idx"] = 0
-    v["results"] = []
-    v["last_slot"] = current_slot_key
-    st.session_state.active_slot = current_slot_key
-    save_persistence(v["last_slot"], v["results"])
-
-# ==============================
-# 7. 掃描引擎（Mutex + 分批）
-# ==============================
-if v["running"] and not st.session_state.lock:
-    st.session_state.lock = True
-    try:
-        universe = get_universe()
-        total = len(universe)
-
-        if total > 0 and v["idx"] < total:
-            if time.time() - st.session_state.yf_lock_time > 3:
-
-                batch = universe[v["idx"]: v["idx"] + 10]
-
-                raw = yf.download(
-                    batch,
-                    period="250d",
-                    group_by="ticker",
-                    threads=True,
-                    progress=False
-                )
-
-                for code in batch:
-                    try:
-                        try:
-                            df_sub = raw.xs(code, level=0, axis=1)
-                        except:
-                            df_sub = raw[code] if code in raw else raw
-
-                        result = analyze_stock_logic(code, df_sub)
-                        if result:
-                            v["results"].append(result)
-                    except:
-                        continue
-
-                v["idx"] += len(batch)
-                st.session_state.yf_lock_time = time.time()
-
-                if v["idx"] % 40 == 0:
-                    save_persistence(v["last_slot"], v["results"])
-        else:
-            v["running"] = False
-            save_persistence(v["last_slot"], v["results"])
-
-    finally:
-        st.session_state.lock = False
-
-# ==============================
-# 8. UI
-# ==============================
-st_autorefresh(interval=2000, key="heartbeat")
-
-st.title("🛡️ 多頭趨勢選股實驗室 v10.2")
-
-st.code("排程: " + ", ".join(SCHEDULE))
-st.caption(f"最後更新: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-
-c1, c2 = st.columns(2)
-slot_label = v["last_slot"].split("_")[-1] if "_" in v["last_slot"] else "等待中"
-c1.metric("股票更新時間", slot_label)
-c2.metric("符合數量", len(v["results"]))
-
-if v["running"]:
-    st.progress(v["idx"] / max(len(get_universe()), 1))
-
-if v["results"]:
-    df_view = pd.DataFrame(v["results"]).drop_duplicates(subset=["股票代號"])
-    st.dataframe(df_view.sort_values("型態"), use_container_width=True)
-else:
-    st.info("掃描中...")
-
-with st.expander("診斷"):
-    st.write(v)
-
-    if st.button("Reset"):
-        v.update({"running": False, "idx": 0, "results": [], "last_slot": ""})
-        st.session_state.lock = False
-        save_persistence("", [])
+if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
+    if brain.try_lock(current_slot):
         st.rerun()
 
+# C. 任務執行 (Error Handling 強化)
+if brain.is_scanning:
+    universe = ["2330.TW", "2317.TW", "2454.TW", "2303.TW", "2881.TW"] # 假設
+    try:
+        if brain.current_idx < len(universe):
+            batch = universe[brain.current_idx : brain.current_idx + 5]
+            with st.status(f"🚀 {get_worker_id()} 執行中..."):
+                time.sleep(2) # 模擬 yf 下載
+                for code in batch:
+                    brain.temp_results.append({"股票": code, "價格": 110.0, "時間": now.strftime("%H:%M")})
+                brain.current_idx += len(batch)
+                # 更新本地進度
+                db.update({"list": brain.temp_results, "status": "running", "ts": time.time()})
+                with open(LOCAL_STATE, "w") as f: json.dump(db, f)
+        else:
+            # 完成並存檔至 GitHub
+            db.update({"status": "complete", "last_slot": current_slot})
+            _, db_sha = GitHubEngine.fetch_remote(DB_PATH)
+            GitHubEngine.commit_file(DB_PATH, db, f"Final {current_slot}", db_sha)
+            # 釋放鎖
+            _, lock_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+            if lock_sha: GitHubEngine.delete_lock(lock_sha)
+            brain.is_scanning = False
+            st.success("✅ 全域同步完成")
+            st.rerun()
+    except Exception as e:
+        # 🛡️ 錯誤恢復機制
+        st.error(f"任務中斷: {e}")
+        _, lock_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+        if lock_sha: GitHubEngine.delete_lock(lock_sha)
+        brain.is_scanning = False
+
 # ==============================
-# 9. 投資免責聲明 (收合式)
+# 4. 前端展示
 # ==============================
-st.markdown("---")
-with st.expander("⚠️ 投資免責聲明 (Disclaimer)"):
-    st.caption("""
-    1. **本工具僅供技術分析實驗與研究參考**，不構成任何投資建議、買賣邀約或承諾。
-    2. 系統顯示之資料來源為第三方 API，資料可能存在延遲、錯誤或缺漏，使用者應自行核實。
-    3. 過去的績效不代表未來獲利，投資一定有風險，股票投資有賺有賠，申購前應詳閱公開說明書並審慎評估。
-    4. 使用者須對其投資決策負完全責任，本程式開發者不負擔任何法律責任或損失賠償。
-    """)
+st.title("🌐 選股實驗室 v13.5 (Distributed Consensus)")
+
+# 顯示誰正在掃描
+remote_lock, _ = GitHubEngine.fetch_remote(LOCK_PATH)
+if remote_lock:
+    st.info(f"⚡ 任務執行中: {remote_lock['slot']} | 節點: {remote_lock['worker']}")
+
+if db.get("list"):
+    st.subheader(f"📊 {db['last_slot']} 結果")
+    st.table(pd.DataFrame(db["list"]))
+
+st.caption(f"Worker: {get_worker_id()} | Last Sync: {datetime.fromtimestamp(db.get('ts', 0)).strftime('%H:%M:%S')}")
