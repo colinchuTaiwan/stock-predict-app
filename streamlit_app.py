@@ -122,7 +122,7 @@ db = remote_db if (remote_db and "last_slot" in remote_db) else {"ts": 0, "list"
 
 # 時段判定
 now = now_taipei()
-SCHEDULE = ["09:05", "10:30", "13:20", "17:42", "17:50", "18:00"] 
+SCHEDULE = ["09:05", "10:30", "13:20", "17:42", "17:52", "18:00"] 
 current_slot = ""
 for t in SCHEDULE:
     dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
