@@ -196,7 +196,7 @@ if db.get("status") == "running" and not brain.is_scanning:
 
 # [Step 3] 排程觸發
 now = now_taipei()
-SCHEDULE = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:15", "15:30"]
+SCHEDULE = ["08:30", "09:25", "10:40", "11:30", "12:30", "13:15", "15:30"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
