@@ -269,7 +269,7 @@ with st.sidebar:
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
     st.write(f"腦袋掃描中: `{brain.is_scanning}`")
     if st.button("📝 測試 Log"): 
-        LogEngine.add_log("手動測試成功"    
+        LogEngine.add_log("手動測試成功")   
     st.subheader("最新日誌")
     logs, _ = GitHubEngine.fetch_remote(LOG_PATH)
     if logs: st.text("\n".join(str(logs).splitlines()[-8:]))
