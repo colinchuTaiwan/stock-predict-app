@@ -216,6 +216,9 @@ else:
 with st.sidebar:
     st.header("⚙️ 狀態資訊")
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
+    if st.button("📝 測試 Log"): 
+        LogEngine.add_log("手動測試成功") 
     st.write(f"當前槽位: `{current_slot or '等待中'}`")
     st.write(f"執行狀態: `{'掃描中' if brain.is_scanning else '閒置'}`")
     
