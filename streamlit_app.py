@@ -183,7 +183,7 @@ brain = DistributedBrain()
 # 4. 主流程
 # ==============================
 st.set_page_config(page_title="🛡️ 趨勢選股 v14.5", layout="wide")
-st_autorefresh(interval=15000, key="v145_refresh") 
+st_autorefresh(interval=3000, key="v145_refresh") 
 
 # [Step 1] 資料同步
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
@@ -198,7 +198,7 @@ if db.get("status") == "running" and not brain.is_scanning:
 
 # [Step 3] 排程觸發
 now = now_taipei()
-SCHEDULE = ["08:30", "09:25", "10:40", "11:30", "12:30", "13:15", "17:03"]
+SCHEDULE = ["08:30", "09:25", "10:40", "11:30", "12:30", "13:15", "17:09"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -218,7 +218,7 @@ if brain.is_scanning:
         universe = uni_data.get("stocks", []) if uni_data else ["2330.TW"]
         
         if brain.current_idx < len(universe):
-            batch = universe[brain.current_idx : brain.current_idx + 15]
+            batch = universe[brain.current_idx : brain.current_idx + 10]
             with st.status(f"📡 掃描中 {brain.current_idx}/{len(universe)}..."):
                 raw = yf.download(batch, period="300d", group_by='ticker', threads=False, progress=False)
                 
