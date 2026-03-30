@@ -151,16 +151,32 @@ class DistributedBrain:
     def try_lock(self, slot):
         LogEngine.add_log(f"try_lock")
         with self.mu:
+            # 1. 檢查遠端鎖狀態
             rem_lock, sha = GitHubEngine.fetch_remote(LOCK_PATH)
-            if rem_lock and time.time() - rem_lock.get("ts", 0) < 900: return False
-            new_l = {"slot": slot, "ts": time.time(), "worker": get_worker_id()}
-            if GitHubEngine.commit_file(LOCK_PATH, new_l, f"Lock:{slot}", sha):
+            
+            # 2. 如果鎖存在且未過期 (15分鐘內)，則跳過
+            if rem_lock and isinstance(rem_lock, dict):
+                if time.time() - rem_lock.get("ts", 0) < 900:
+                    return False
+            
+            # 3. 準備新鎖資料
+            new_l = {
+                "slot": slot, 
+                "ts": time.time(), 
+                "worker": get_worker_id(),
+                "status": "active"
+            }
+            
+            # 4. 強制寫入鎖 (帶上 sha 確保更新成功)
+            if GitHubEngine.commit_file(LOCK_PATH, new_l, f"Force Lock:{slot}", sha):
                 self.is_scanning = True
                 self.current_idx = 0
                 self.temp_results = []
-                LogEngine.add_log(f"🚀 啟動掃描: {slot}")
+                LogEngine.add_log(f"🚀 奪鎖成功，開始執行時段: {slot}")
                 return True
-            return False
+            else:
+                # 如果連 commit 都失敗，通常是 API Token 問題
+                return False
 
 brain = DistributedBrain()
 
