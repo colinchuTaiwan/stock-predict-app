@@ -1,1 +1,6 @@
-
+{
+  "slot": "init",
+  "ts": 0,
+  "worker": "manual-init",
+  "status": "released"
+}
