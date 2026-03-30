@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 環境設定
+# 0. 基礎設定
 # ==============================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
 REPO_NAME = st.secrets.get("GITHUB_REPO")
@@ -21,7 +21,7 @@ def now_taipei(): return datetime.now(tz)
 def get_worker_id(): return f"{socket.gethostname()}-{os.getpid()}"
 
 # ==============================
-# 1. GitHub 引擎 (穩定輸出版)
+# 1. GitHub 引擎
 # ==============================
 class GitHubEngine:
     @staticmethod
@@ -61,32 +61,50 @@ class GitHubEngine:
         except: return False
 
 # ==============================
-# 2. 選股策略 (策略保持不變)
+# 2. 選股邏輯 (增加安全性檢查)
 # ==============================
 def analyze_stock_logic(code, df):
     try:
+        # 檢查 DataFrame 是否合法且包含必要欄位
         if df is None or df.empty or len(df) < 200: return None
+        if 'Close' not in df.columns: return None
+        
         c = df['Close']
         ma = {w: c.rolling(w).mean().iloc[-1] for w in [5, 10, 20, 60]}
-        last, prev = df.iloc[-1], df.iloc[-2]
-        price, vol = last['Close'], last['Volume'] / 1000
-        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
-        rk = (price - last['Open']) * 100 / last['Open']
         
-        if not (1.0 <= rk <= 7.0) or price > 250 or vol < 100 or vol < mv20 * 1.2: return None
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        price = float(last['Close'])
+        open_p = float(last['Open'])
+        vol = float(last['Volume']) / 1000
+        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
+        
+        rk = (price - open_p) * 100 / open_p
+        
+        # 策略過濾
+        if not (1.0 <= rk <= 8.0): return None
+        if price > 280 or vol < 150 or vol < mv20 * 1.1: return None
         
         ma_list = [ma[5], ma[10], ma[20], ma[60]]
         signal = ""
         if ma[5] > ma[10] > ma[20] > ma[60]: signal = "均線多排"
-        elif (max(ma_list) / min(ma_list)) < 1.06: signal = "均線糾結"
+        elif (max(ma_list) / min(ma_list)) < 1.07: signal = "均線糾結"
         
         if signal and price > ma[5] and price > prev['High']:
-            return {"股票代號": code, "價格": round(price, 2), "漲幅": f"{round(rk, 2)}%", "成交量": int(vol), "型態": signal, "時間": now_taipei().strftime("%H:%M")}
-    except: pass
+            return {
+                "股票代號": code,
+                "價格": round(price, 2),
+                "漲幅": f"{round(rk, 2)}%",
+                "成交量": int(vol),
+                "型態": signal,
+                "時間": now_taipei().strftime("%H:%M")
+            }
+    except Exception as e:
+        pass
     return None
 
 # ==============================
-# 3. 狀態大腦 (強化狀態清理)
+# 3. 狀態大腦
 # ==============================
 @st.cache_resource
 class DistributedBrain:
@@ -97,11 +115,9 @@ class DistributedBrain:
     def try_lock(self, slot):
         if time.time() - self.last_try_time < 30: return False
         self.last_try_time = time.time()
-        
         rem_lock, sha = GitHubEngine.fetch_remote(LOCK_PATH)
         if rem_lock and isinstance(rem_lock, dict):
-            if time.time() - rem_lock.get("ts", 0) < 600: return False # 10分鐘過期
-        
+            if time.time() - rem_lock.get("ts", 0) < 600: return False
         new_lock = {"slot": slot, "ts": time.time(), "worker": get_worker_id()}
         return GitHubEngine.commit_file(LOCK_PATH, new_lock, f"Lock {slot}", sha)
 
@@ -110,80 +126,87 @@ brain = DistributedBrain()
 # ==============================
 # 4. 主流程
 # ==============================
-st.set_page_config(page_title="趨勢選股 v15.0", layout="wide")
+st.set_page_config(page_title="趨勢選股 v15.1", layout="wide")
 
-# 只有在「非掃描狀態」才自動刷新，間隔拉長到 20 秒，避免 GitHub API 塞車
 if not brain.is_scanning:
-    st_autorefresh(interval=20000, key="refresh_safe")
+    st_autorefresh(interval=30000, key="refresh_safe") # 拉長到 30 秒更穩定
 
-# 抓取遠端資料
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
-db = remote_db if (remote_db and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
+db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
 
-# 時段判定
 now = now_taipei()
-SCHEDULE = ["09:05", "10:30", "13:20", "17:42", "17:52", "18:00"] 
+SCHEDULE = ["09:05", "09:35", "10:35", "11:35", "12:35", "13:25", "17:58", "18:10", "20:00"] 
 current_slot = ""
 for t in SCHEDULE:
     dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-    if 0 <= (now - dt).total_seconds() <= 1200:
+    if 0 <= (now - dt).total_seconds() <= 1500:
         current_slot = f"{now.strftime('%m%d')}_{t}"
         break
 
-# --- 觸發區 ---
 if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
     if brain.try_lock(current_slot):
         brain.is_scanning = True
         st.rerun()
 
-# --- 掃描執行區 ---
+# --- 核心掃描區 (🔥修正 KeyError) ---
 if brain.is_scanning:
     with st.status(f"🚀 正在掃描 {current_slot}...", expanded=True) as status:
         uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
-        stocks = uni_data.get("stocks", ["2330.TW"]) if uni_data else ["2330.TW"]
+        stocks = uni_data.get("stocks", ["2330.TW", "2317.TW"]) if uni_data else ["2330.TW"]
         
-        st.write(f"正在抓取 {len(stocks)} 檔股票數據...")
-        # 🔥 修正：threads=False 降低並行壓力，防止卡圈圈
-        data = yf.download(stocks, period="260d", group_by='ticker', threads=False, progress=False)
-        
-        results = []
-        p_bar = st.progress(0)
-        for i, code in enumerate(stocks):
-            df = data[code] if len(stocks) > 1 else data
-            res = analyze_stock_logic(code, df)
-            if res: results.append(res)
-            p_bar.progress((i + 1) / len(stocks))
+        st.write(f"準備下載 {len(stocks)} 檔股票...")
+        # 這裡不使用 threads 以免連線過多被封鎖
+        try:
+            data = yf.download(stocks, period="260d", group_by='ticker', threads=False, progress=False)
             
-        st.write("同步結果至 GitHub...")
-        new_db = {"list": results, "last_slot": current_slot, "ts": time.time()}
-        if GitHubEngine.commit_file(DB_PATH, new_db, f"Final {current_slot}"):
-            _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
-            GitHubEngine.delete_lock(l_sha)
+            results = []
+            p_bar = st.progress(0)
             
-            # 🔥 關鍵：清理快取並重置狀態，不要立即 rerun
+            for i, code in enumerate(stocks):
+                try:
+                    # 🔥 修正點：安全檢查 data 裡面是否有該 code
+                    if len(stocks) > 1:
+                        if code in data.columns.levels[0]:
+                            df = data[code]
+                        else:
+                            continue # 跳過抓不到的股票
+                    else:
+                        df = data
+                    
+                    res = analyze_stock_logic(code, df)
+                    if res: results.append(res)
+                except:
+                    continue
+                p_bar.progress((i + 1) / len(stocks))
+            
+            st.write("同步至 GitHub...")
+            new_db = {"list": results, "last_slot": current_slot, "ts": time.time()}
+            if GitHubEngine.commit_file(DB_PATH, new_db, f"Final {current_slot}"):
+                _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+                GitHubEngine.delete_lock(l_sha)
+                brain.is_scanning = False
+                status.update(label="✅ 掃描完成！", state="complete", expanded=False)
+                st.balloons()
+                time.sleep(3)
+                st.rerun()
+        except Exception as e:
+            st.error(f"下載失敗: {e}")
             brain.is_scanning = False
-            status.update(label="✅ 掃描完成！資料已同步。", state="complete", expanded=False)
-            st.success(f"時段 {current_slot} 掃描結束。")
-            st.balloons()
             time.sleep(5)
             st.rerun()
 
-# --- UI 渲染 ---
-st.title("📊 趨勢選股系統 v15.0")
-col1, col2 = st.columns([3, 1])
+# --- UI 呈現 ---
+st.title("📊 趨勢選股系統 v15.1")
+if db.get("list"):
+    st.subheader(f"📅 最新結果: {db.get('last_slot')}")
+    st.dataframe(pd.DataFrame(db["list"]), use_container_width=True)
+else:
+    st.info("等待排程自動觸發...")
 
-with col1:
-    if db.get("list"):
-        st.subheader(f"📅 時段 {db.get('last_slot')} 名單")
-        st.dataframe(pd.DataFrame(db["list"]), use_container_width=True)
-    else:
-        st.info("目前無符合條件標的，等待排程啟動。")
-
-with col2:
-    st.header("⚙️ 狀態")
-    st.write(f"時間: `{now.strftime('%H:%M:%S')}`")
-    st.write(f"槽位: `{current_slot or '等待排程'}`")
-    if st.button("🚨 強制釋放鎖"):
+with st.sidebar:
+    st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.write(f"目前槽位: `{current_slot}`")
+    if st.button("🚨 強制釋放"):
         _, sha = GitHubEngine.fetch_remote(LOCK_PATH)
         GitHubEngine.delete_lock(sha)
         st.rerun()
