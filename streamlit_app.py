@@ -149,7 +149,8 @@ brain = DistributedBrain()
 # 4. 主流程 (逐行檢視：資料同步與 UI)
 # ==============================
 st.set_page_config(page_title="趨勢選股 v14.9", layout="wide")
-st_autorefresh(interval=10000, key="refresh_v149") # 10秒刷新
+if not brain.is_scanning:
+    st_autorefresh(interval=10000, key="refresh_v149")
 
 # A. 資料同步
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
@@ -173,35 +174,59 @@ if current_slot and db.get("last_slot") != current_slot and not brain.is_scannin
 
 # D. 掃描執行任務 (逐行檢視：yf 下載邏輯)
 if brain.is_scanning:
-    LogEngine.add_log(f"📡 掃描啟動: 時段 {current_slot}")
-    st.info(f"📡 掃描啟動: 時段 {current_slot}")
-    uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
-    # 預設一些標的，若 UNIVERSE_FILE 為空則使用
-    stocks = uni_data.get("stocks", ["2330.TW", "2317.TW", "2454.TW"]) if uni_data else ["2330.TW"]
+    # 使用 st.empty() 建立一個容器，避免刷新導致畫面閃爍
+    status_placeholder = st.empty()
     
-    try:
-        # 下載過去一年的數據以計算均線
-        data = yf.download(stocks, period="300d", group_by='ticker', threads=True, progress=False)
-        results = []
-        bar = st.progress(0)
+    with status_placeholder.container():
+        st.info(f"📡 掃描啟動: 時段 {current_slot}")
         
-        for i, code in enumerate(stocks):
-            df = data[code] if len(stocks) > 1 else data
-            res = analyze_stock_logic(code, df)
-            if res: results.append(res)
-            bar.progress((i + 1) / len(stocks))
+        # 1. 抓取股票清單
+        uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
+        stocks = uni_data.get("stocks", ["2330.TW", "2317.TW"]) if uni_data else ["2330.TW"]
         
-        # 任務完成回寫
-        new_db = {"list": results, "last_slot": current_slot, "ts": time.time()}
-        if GitHubEngine.commit_file(DB_PATH, new_db, f"Scan {current_slot} OK"):
-            _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
-            if l_sha: GitHubEngine.delete_lock(l_sha)
+        # 2. 顯示進度
+        progress_bar = st.progress(0)
+        
+        try:
+            # 🔥 關鍵：增加 threads=False 或限制數量，避免 yfinance 被 GitHub/Yahoo 封鎖
+            # 增加 timeout 確保不會無限等待
+            data = yf.download(stocks, period="300d", group_by='ticker', threads=True, progress=False)
+            
+            results = []
+            for i, code in enumerate(stocks):
+                df = data[code] if len(stocks) > 1 else data
+                if df is not None and not df.empty:
+                    res = analyze_stock_logic(code, df)
+                    if res:
+                        results.append(res)
+                progress_bar.progress((i + 1) / len(stocks))
+            
+            # 3. 寫回資料庫 (重要：這步完成後，循環才會停止)
+            new_db = {
+                "list": results, 
+                "last_slot": current_slot, 
+                "ts": time.time(),
+                "status": "complete"
+            }
+            
+            with st.spinner("正在同步資料至 GitHub..."):
+                if GitHubEngine.commit_file(DB_PATH, new_db, f"Scan {current_slot} Final"):
+                    # 4. 釋放鎖
+                    _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+                    if l_sha:
+                        GitHubEngine.delete_lock(l_sha)
+                    
+                    brain.is_scanning = False
+                    st.success(f"✅ 掃描完成！命中 {len(results)} 檔。")
+                    time.sleep(3) # 讓使用者看一眼結果
+                    st.rerun() # 最後一次強制刷新，回到正常顯示模式
+                    
+        except Exception as e:
+            st.error(f"掃描發生異常: {e}")
+            # 發生錯誤時要釋放狀態，否則會卡死
             brain.is_scanning = False
-            LogEngine.add_log(f"✅ 完成任務: {current_slot} (共{len(results)}檔)")
+            time.sleep(5)
             st.rerun()
-    except Exception as e:
-        LogEngine.add_log(f"🚨 錯誤: {str(e)}")
-        brain.is_scanning = False
 
 # E. UI 渲染 (逐行檢視：資料呈現)
 st.title("📊 趨勢選股系統 v14.9")
