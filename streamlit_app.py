@@ -13,7 +13,7 @@ GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
 REPO_NAME = st.secrets.get("REPO_NAME")
 DB_PATH = "db/scan_results.json"
 LOCK_PATH = "db/scan.lock.json"
-LOG_PATH = "db/app.log"  # Log 存放位置
+LOG_PATH = "app.log"  # Log 存放位置
 UNIVERSE_FILE = "db/taiwan_Full.json" 
 STORAGE_DIR = "/tmp/stock_app"
 LOCAL_STATE = os.path.join(STORAGE_DIR, "scan_results.json")
@@ -178,7 +178,7 @@ if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
 
 db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"last_slot":"", "list":[], "status":"idle"}
 now = now_taipei()
-SCHEDULE = ["08:59", "09:13", "10:50", "11:50", "12:20", "13:15", "15:30"]
+SCHEDULE = ["08:59", "09:15", "10:50", "11:50", "12:20", "13:15", "15:30"]
 
 current_slot = ""
 for t in SCHEDULE:
