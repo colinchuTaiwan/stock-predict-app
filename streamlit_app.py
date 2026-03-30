@@ -180,8 +180,8 @@ else:
 
 # 排程檢查
 now = now_taipei()
-SCHEDULE = ["08:30", "10:02", "10:50", "11:50", "12:20", "13:15", "15:30"]
-LogEngine.add_log(f"{SCHEDULE }")
+SCHEDULE = ["08:30", "10:06", "10:50", "11:50", "12:20", "13:15", "15:30"]
+#LogEngine.add_log(f"{SCHEDULE }")
 
 current_slot = ""
 for t in SCHEDULE:
@@ -191,10 +191,13 @@ for t in SCHEDULE:
 
 if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
     if brain.try_lock(current_slot): st.rerun()
-LogEngine.add_log(f"{now.strftime('%H:%M:%S')}")
+        
+#LogEngine.add_log(f"{now.strftime('%H:%M:%S')}")
+
 # 掃描核心
 if brain.is_scanning:
     try:
+        LogEngine.add_log(f"brain.is_scanning")
         uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
         universe = uni_data.get("stocks", []) if uni_data else ["2330.TW"]
         if brain.current_idx < len(universe):
