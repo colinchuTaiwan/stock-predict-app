@@ -170,7 +170,6 @@ brain = DistributedBrain()
 st.set_page_config(page_title="v13.5 終極選股引擎", layout="wide")
 st_autorefresh(interval=5000, key="global_sync")
 
-os.makedirs(STORAGE_DIR, exist_ok=True)
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
 local_db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"ts": 0}
 if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
