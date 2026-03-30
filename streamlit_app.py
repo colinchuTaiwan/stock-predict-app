@@ -86,6 +86,7 @@ def calc_indicators(df):
     return df
 
 def analyze_stock_logic(code, df):
+    LogEngine.add_log(f"analyze_stock_logic")
     try:
         if df is None or df.empty: return None
         required_cols = ['Open', 'Close', 'High', 'Volume']
@@ -119,7 +120,7 @@ def analyze_stock_logic(code, df):
 
         is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
         if not is_breakout: return None
-
+        LogEngine.add_log(f"{code}")
         signal = None
         # 多排判斷
         if ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
@@ -179,7 +180,9 @@ else:
 
 # 排程檢查
 now = now_taipei()
-SCHEDULE = ["08:30", "09:55", "10:50", "11:50", "12:20", "13:15", "15:30"]
+SCHEDULE = ["08:30", "10:02", "10:50", "11:50", "12:20", "13:15", "15:30"]
+LogEngine.add_log(f"{SCHEDULE }")
+
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -188,7 +191,7 @@ for t in SCHEDULE:
 
 if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
     if brain.try_lock(current_slot): st.rerun()
-
+LogEngine.add_log(f"{now.strftime('%H:%M:%S')}")
 # 掃描核心
 if brain.is_scanning:
     try:
@@ -198,10 +201,13 @@ if brain.is_scanning:
             batch = universe[brain.current_idx : brain.current_idx + 15]
             with st.status(f"🚀 掃描中 {brain.current_idx}/{len(universe)}..."):
                 raw = yf.download(batch, period="300d", group_by='ticker', threads=True, progress=False)
+                
                 for code in batch:
                     df = raw[code] if len(batch) > 1 else raw
                     res = analyze_stock_logic(code, df)
-                    if res: brain.temp_results.append(res)
+                    if res: 
+                        brain.temp_results.append(res)
+                        LogEngine.add_log(f"{res}")
                 brain.current_idx += len(batch)
                 db.update({"list": brain.temp_results, "status": "running", "progress": brain.current_idx, "total": len(universe), "ts": time.time()})
                 with open(LOCAL_STATE, "w") as f: json.dump(db, f)
