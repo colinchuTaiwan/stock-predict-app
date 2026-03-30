@@ -5,6 +5,7 @@ import numpy as np
 import json, os, time, threading, requests, base64, socket
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
+import logging
 
 # ==============================
 # 0. 環境設定 (Secrets)
@@ -16,6 +17,10 @@ LOCK_PATH = "db/scan.lock.json"
 UNIVERSE_FILE = "db/taiwan_Full.json" 
 STORAGE_DIR = "/tmp/stock_app"
 LOCAL_STATE = os.path.join(STORAGE_DIR, "scan_results.json")
+logging.basicConfig(filename="app.log", level=logging.DEBUG)
+logger = logging.getLogger("my_logger")
+logger.info("App started")
+
 
 tz = timezone(timedelta(hours=8))
 def now_taipei(): return datetime.now(tz)
