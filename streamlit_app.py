@@ -267,6 +267,7 @@ else:
 with st.sidebar:
     st.header("⚙️ 系統資訊")
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
     st.write(f"腦袋掃描中: `{brain.is_scanning}`")
     if st.button("📝 測試 Log"): 
         LogEngine.add_log("手動測試成功")   
