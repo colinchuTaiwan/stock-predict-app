@@ -70,12 +70,12 @@ class LogEngine:
                 updated_content = f"=== Log Start ===\n{new_line}"
             else:
                 lines = str(old_content).splitlines()
-                updated_content = "\n".join(lines[-100:] + [new_line])
+                updated_content = "\n".join(lines[-50:] + [new_line]) # 保持日誌精簡
             return GitHubEngine.commit_file(LOG_PATH, updated_content, "Update Log", sha)
         except: return False
 
 # ==============================
-# 2. 策略邏輯 (強化版)
+# 2. 策略邏輯
 # ==============================
 def calc_indicators(df):
     df = df.copy()
@@ -86,12 +86,10 @@ def calc_indicators(df):
     return df
 
 def analyze_stock_logic(code, df):
-    LogEngine.add_log(f"analyze_stock_logic")
     try:
         if df is None or df.empty: return None
         required_cols = ['Open', 'Close', 'High', 'Volume']
         if not all(col in df.columns for col in required_cols): return None
-        
         df = df.dropna()
         if len(df) < 210: return None
         
@@ -111,24 +109,20 @@ def analyze_stock_logic(code, df):
         mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
 
         if not (1 < rk < 7): return None
-
         cond_basic = (price > pre_high and price > ma[5]) and \
                      (mv20 > 100 and vol > 100) and \
                      (price < 200) and (vol > pre_vol * 1.5)
-        
         if not cond_basic: return None
 
         is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
         if not is_breakout: return None
-        LogEngine.add_log(f"{code}")
+
         signal = None
-        # 多排判斷
+        # 多排
         if ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
             up_count = sum(1 for w in [5, 20, 60, 100, 200] if ma_d[w] > 0)
-            levels = {5: "五線多排", 4: "四線多排", 3: "三線多排", 2: "二線多排"}
-            signal = levels.get(up_count)
-
-        # 糾結判斷
+            signal = {5:"五線多排", 4:"四線多排", 3:"三線多排", 2:"二線多排"}.get(up_count)
+        # 糾結
         ma_list = list(ma.values())
         if not signal and min(ma_list) > 0 and all(price > ma[w] for w in [20, 60, 100, 200]):
             if (max(ma_list)/min(ma_list) < 1.08) and ma_b[200] < 0.1: signal = "六線糾結"
@@ -141,48 +135,56 @@ def analyze_stock_logic(code, df):
     except: return None
 
 # ==============================
-# 3. 分散式核心
+# 3. 分散式核心 (Cache Resource)
 # ==============================
 @st.cache_resource
 class DistributedBrain:
     def __init__(self):
         self.mu = threading.Lock()
-        self.is_scanning, self.current_idx, self.temp_results = False, 0, []
+        self.is_scanning = False
+        self.current_idx = 0
+        self.temp_results = []
 
     def try_lock(self, slot):
         with self.mu:
-            if self.is_scanning: return False
             rem_lock, sha = GitHubEngine.fetch_remote(LOCK_PATH)
             if rem_lock and time.time() - rem_lock.get("ts", 0) < 900: return False
             new_l = {"slot": slot, "ts": time.time(), "worker": get_worker_id()}
             if GitHubEngine.commit_file(LOCK_PATH, new_l, f"Lock:{slot}", sha):
-                self.is_scanning, self.current_idx, self.temp_results = True, 0, []
-                LogEngine.add_log(f"🚀 啟動掃描時段: {slot}")
+                self.is_scanning = True
+                self.current_idx = 0
+                self.temp_results = []
+                LogEngine.add_log(f"🚀 啟動掃描: {slot}")
                 return True
             return False
 
 brain = DistributedBrain()
 
 # ==============================
-# 4. 主流程與 UI
+# 4. 主流程
 # ==============================
-st.set_page_config(page_title="🛡️ 趨勢選股 v14.1", layout="wide")
-st_autorefresh(interval=10000, key="v141_sync")
+st.set_page_config(page_title="🛡️ 趨勢選股 v14.3", layout="wide")
+st_autorefresh(interval=12000, key="v143_refresh") # 稍微拉長間隔減少衝突
 
-# 資料同步
+# [Step 1] 資料同步
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
-local_db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"ts": 0, "list": []}
+local_db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"ts": 0, "list": [], "status": "idle"}
+
 if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
     with open(LOCAL_STATE, "w") as f: json.dump(remote_db, f)
     db = remote_db
 else:
     db = local_db
 
-# 排程檢查
-now = now_taipei()
-SCHEDULE = ["08:30", "10:06", "10:50", "11:50", "12:20", "13:15", "15:30"]
-#LogEngine.add_log(f"{SCHEDULE }")
+# [Step 2] 狀態接力 (關鍵修正：確保 Rerun 後掃描不中斷)
+if db.get("status") == "running" and not brain.is_scanning:
+    brain.is_scanning = True
+    brain.current_idx = db.get("progress", 0)
+    brain.temp_results = db.get("list", [])
 
+# [Step 3] 排程觸發
+now = now_taipei()
+SCHEDULE = ["08:30", "09:30", "10:14", "11:30", "12:30", "13:15", "15:30"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -191,82 +193,93 @@ for t in SCHEDULE:
 
 if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
     if brain.try_lock(current_slot): st.rerun()
-        
-#LogEngine.add_log(f"{now.strftime('%H:%M:%S')}")
 
-# 掃描核心
+# [Step 4] 執行掃描 (與排程獨立，只要 is_scanning 為 True 就跑)
 if brain.is_scanning:
     try:
-        LogEngine.add_log(f"brain.is_scanning")
         uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
         universe = uni_data.get("stocks", []) if uni_data else ["2330.TW"]
+        
         if brain.current_idx < len(universe):
-            batch = universe[brain.current_idx : brain.current_idx + 15]
-            with st.status(f"🚀 掃描中 {brain.current_idx}/{len(universe)}..."):
-                LogEngine.add_log(f"yf.download")
-                raw = yf.download(batch, period="300d", group_by='ticker', threads=True, progress=False)
+            batch_size = 15
+            batch = universe[brain.current_idx : brain.current_idx + batch_size]
+            
+            with st.status(f"📡 掃描中 {brain.current_idx}/{len(universe)}..."):
+                # 修正：threads=False 避免雲端環境執行緒衝突
+                raw = yf.download(batch, period="300d", group_by='ticker', threads=False, progress=False)
                 
+                hits_this_batch = 0
                 for code in batch:
-                    df = raw[code] if len(batch) > 1 else raw
-                    LogEngine.add_log(f"analyze_stock_logic")
-                    res = analyze_stock_logic(code, df)
-                    if res: 
-                        brain.temp_results.append(res)
-                        LogEngine.add_log(f"{res}")
+                    try:
+                        df = raw[code] if len(batch) > 1 else raw
+                        res = analyze_stock_logic(code, df)
+                        if res: 
+                            brain.temp_results.append(res)
+                            hits_this_batch += 1
+                    except: continue
+                
                 brain.current_idx += len(batch)
-                db.update({"list": brain.temp_results, "status": "running", "progress": brain.current_idx, "total": len(universe), "ts": time.time()})
+                # 更新進度到 DB
+                db.update({
+                    "list": brain.temp_results, 
+                    "status": "running", 
+                    "progress": brain.current_idx, 
+                    "total": len(universe), 
+                    "ts": time.time()
+                })
                 with open(LOCAL_STATE, "w") as f: json.dump(db, f)
+                
+                # 只有命中時才寫 Log，避免 API Rate Limit
+                if hits_this_batch > 0:
+                    LogEngine.add_log(f"批次命中 {hits_this_batch} 檔")
         else:
+            # 掃描結束
             db.update({"status": "complete", "last_slot": current_slot, "ts": time.time()})
             _, db_sha = GitHubEngine.fetch_remote(DB_PATH)
             GitHubEngine.commit_file(DB_PATH, db, f"Final {current_slot}", db_sha)
             LogEngine.add_log(f"✅ 完成掃描 {current_slot}, 發現 {len(brain.temp_results)} 檔")
+            
             _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
             if l_sha: GitHubEngine.delete_lock(l_sha)
+            
             brain.is_scanning = False
             st.rerun()
     except Exception as e:
-        LogEngine.add_log(f"❌ 嚴重錯誤: {str(e)}")
+        LogEngine.add_log(f"🚨 異常中斷: {str(e)}")
         brain.is_scanning = False
 
-# --- UI 渲染 ---
-st.title("🛡️ 趨勢選股系統 v14.1")
+# ==============================
+# 5. UI 渲染
+# ==============================
+st.title("🛡️ 趨勢選股系統 v14.3")
 
-# 進度條顯示
 if db.get("status") == "running":
     prog = db.get("progress", 0) / max(db.get("total", 1), 1)
     st.progress(prog, text=f"任務執行中... {db.get('progress')}/{db.get('total')}")
 
-# 結果顯示
 if db.get("list"):
-    st.subheader(f"📊 {db.get('last_slot')} 名單 (更新於: {now.strftime('%H:%M:%S')})")
+    st.subheader(f"📊 {db.get('last_slot') or '最新'} 名單 (更新於: {now.strftime('%H:%M:%S')})")
     df_view = pd.DataFrame(db["list"]).drop_duplicates(subset=["股票代號"])
     st.dataframe(df_view.sort_values("型態"), use_container_width=True)
 else:
-    st.info("💡 掃描中或目前無符合標的...")
+    st.info("💡 待機中或目前無符合標的...")
 
 with st.sidebar:
     st.header("⚙️ 系統資訊")
-    st.write(f"當前伺服器時間: `{now.strftime('%H:%M:%S')}`")
-    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
-    
-    if st.button("📝 測試 Log"): LogEngine.add_log("手動測試成功")
+    st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.write(f"腦袋掃描中: `{brain.is_scanning}`")
     
     st.subheader("最新日誌")
     logs, _ = GitHubEngine.fetch_remote(LOG_PATH)
     if logs: st.text("\n".join(str(logs).splitlines()[-8:]))
 
-with st.expander("🛠️ 診斷與管理"):
-    st.write("當前 DB 狀態:", db)
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🚨 強制重置 (Reset)"):
-            db.update({"status": "idle", "progress": 0, "list": [], "last_slot": "", "ts": time.time()})
-            with open(LOCAL_STATE, "w") as f: json.dump(db, f)
-            _, d_sha = GitHubEngine.fetch_remote(DB_PATH)
-            GitHubEngine.commit_file(DB_PATH, db, "Manual Reset", d_sha)
-            _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
-            if l_sha: GitHubEngine.delete_lock(l_sha)
-            st.rerun()
-    with col2:
-        if st.button("🔄 刷新頁面"): st.rerun()
+with st.expander("🛠️ 管理員工具"):
+    if st.button("🚨 強制重置 (Reset All)"):
+        db.update({"status": "idle", "progress": 0, "list": [], "last_slot": "", "ts": time.time()})
+        with open(LOCAL_STATE, "w") as f: json.dump(db, f)
+        _, d_sha = GitHubEngine.fetch_remote(DB_PATH)
+        GitHubEngine.commit_file(DB_PATH, db, "Manual Reset", d_sha)
+        _, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+        if l_sha: GitHubEngine.delete_lock(l_sha)
+        brain.is_scanning = False
+        st.rerun()
