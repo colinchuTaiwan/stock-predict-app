@@ -195,13 +195,16 @@ if brain.is_scanning:
         uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
         universe = uni_data.get("stocks", []) if uni_data else ["2330.TW"]
         if brain.current_idx < len(universe):
-            batch = universe[brain.current_idx : brain.current_idx + 15]
+            batch = universe[brain.current_idx : brain.current_idx + 10]
+            LogEngine.add_log(f"正在下載批次: {', '.join(batch)}")
             with st.status(f"🚀 掃描進度 {brain.current_idx}/{len(universe)}..."):
                 raw = yf.download(batch, period="300d", group_by='ticker', threads=False, progress=False)
                 for code in batch:
                     df = raw[code] if len(batch) > 1 else raw
                     res = analyze_stock_logic(code, df)
-                    if res: brain.temp_results.append(res)
+                    if res: 
+                            brain.temp_results.append(res)
+                            LogEngine.add_log(f"⭐ 發現符合標的: {code}")
                 brain.current_idx += len(batch)
                 db.update({"list": brain.temp_results, "status": "running", "progress": brain.current_idx, "total": len(universe), "ts": time.time()})
                 with open(LOCAL_STATE, "w") as f: json.dump(db, f)
