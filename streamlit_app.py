@@ -66,14 +66,48 @@ class LogEngine:
         try:
             ts = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
             new_line = f"[{ts}] {message}"
-            old_content, sha = GitHubEngine.fetch_remote(LOG_PATH)
-            if old_content is None:
-                updated_content = f"=== Log Start ===\n{new_line}"
+            
+            # 1. 抓取遠端舊內容
+            url = f"https://api.github.com/repos/{REPO_NAME}/contents/{LOG_PATH}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+            
+            res = requests.get(url, headers=headers, timeout=10)
+            
+            sha = None
+            old_content = ""
+            
+            if res.status_code == 200:
+                data = res.json()
+                old_content = base64.b64decode(data["content"]).decode("utf-8")
+                sha = data["sha"]
+            elif res.status_code == 404:
+                # 檔案不存在，這是正常的，SHA 保持 None 即可
+                old_content = "=== Initialized ==="
             else:
-                lines = str(old_content).splitlines()
-                updated_content = "\n".join(lines[-100:] + [new_line])
-            return GitHubEngine.commit_file(LOG_PATH, updated_content, "Update Log", sha)
-        except: return False
+                st.error(f"Log 讀取失敗: HTTP {res.status_code}")
+                return False
+
+            # 2. 組合內容
+            lines = old_content.splitlines()
+            updated_content = "\n".join(lines[-100:] + [new_line])
+            
+            # 3. 提交寫入
+            payload = {
+                "message": f"Log: {message[:20]}",
+                "content": base64.b64encode(updated_content.encode("utf-8")).decode("utf-8")
+            }
+            if sha: payload["sha"] = sha
+            
+            put_res = requests.put(url, headers=headers, json=payload, timeout=15)
+            
+            if put_res.status_code in [200, 201]:
+                return True
+            else:
+                st.error(f"Log 寫入失敗: HTTP {put_res.status_code} - {put_res.text}")
+                return False
+        except Exception as e:
+            st.error(f"Log 系統崩潰: {str(e)}")
+            return False
 
 # ==============================
 # 2. 策略邏輯
