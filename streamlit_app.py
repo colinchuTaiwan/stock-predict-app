@@ -15,7 +15,7 @@ DB_PATH = "db/scan_results.json"
 LOCK_PATH = "db/scan.lock.json"
 LOG_PATH = "app.log"  # Log 存放位置
 UNIVERSE_FILE = "db/taiwan_Full.json" 
-STORAGE_DIR = "/tmp/stock_app"
+STORAGE_DIR = "/db"
 LOCAL_STATE = os.path.join(STORAGE_DIR, "scan_results.json")
 
 tz = timezone(timedelta(hours=8))
@@ -178,7 +178,7 @@ if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
 
 db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"last_slot":"", "list":[], "status":"idle"}
 now = now_taipei()
-SCHEDULE = ["08:59", "09:18", "10:50", "11:50", "12:20", "13:15", "15:30"]
+SCHEDULE = ["08:59", "09:23", "10:50", "11:50", "12:20", "13:15", "15:30"]
 
 current_slot = ""
 for t in SCHEDULE:
