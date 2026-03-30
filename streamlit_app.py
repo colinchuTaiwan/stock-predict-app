@@ -31,6 +31,7 @@ def get_worker_id(): return f"{socket.gethostname()}-{os.getpid()}"
 class GitHubEngine:
     @staticmethod
     def fetch_remote(path):
+        LogEngine.add_log(f"fetch_remote")
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         try:
@@ -86,6 +87,7 @@ def calc_indicators(df):
     return df
 
 def analyze_stock_logic(code, df):
+    LogEngine.add_log(f"analyze_stock_logic")
     try:
         if df is None or df.empty: return None
         required_cols = ['Open', 'Close', 'High', 'Volume']
@@ -139,13 +141,16 @@ def analyze_stock_logic(code, df):
 # ==============================
 @st.cache_resource
 class DistributedBrain:
+    
     def __init__(self):
+        LogEngine.add_log(f"def __init__")
         self.mu = threading.Lock()
         self.is_scanning = False
         self.current_idx = 0
         self.temp_results = []
 
     def try_lock(self, slot):
+        LogEngine.add_log(f"try_lock")
         with self.mu:
             rem_lock, sha = GitHubEngine.fetch_remote(LOCK_PATH)
             if rem_lock and time.time() - rem_lock.get("ts", 0) < 900: return False
@@ -184,7 +189,7 @@ if db.get("status") == "running" and not brain.is_scanning:
 
 # [Step 3] 排程觸發
 now = now_taipei()
-SCHEDULE = ["08:30", "09:30", "10:15", "11:30", "12:30", "13:15", "15:30"]
+SCHEDULE = ["08:30", "09:30", "10:20", "11:30", "12:30", "13:15", "15:30"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -196,6 +201,7 @@ if current_slot and db.get("last_slot") != current_slot and not brain.is_scannin
 
 # [Step 4] 執行掃描 (與排程獨立，只要 is_scanning 為 True 就跑)
 if brain.is_scanning:
+    LogEngine.add_log(f"brain.is_scanning")
     try:
         uni_data, _ = GitHubEngine.fetch_remote(UNIVERSE_FILE)
         universe = uni_data.get("stocks", []) if uni_data else ["2330.TW"]
