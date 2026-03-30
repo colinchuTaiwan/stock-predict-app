@@ -72,7 +72,8 @@ def calc_indicators(df):
 # 3. 策略邏輯 (你的邏輯修正版)
 # ==============================
 def analyze_stock_logic(code, df):
-    st.write("analyze_stock_logic(")
+    st.write("analyze_stock_logic")
+    st.info("analyze_stock_logic")
     try:
         if df is None or df.empty: return None
         required_cols = ['Open', 'Close', 'High', 'Volume']
@@ -163,7 +164,7 @@ brain = DistributedBrain()
 # 5. UI 與 主執行流
 # ==============================
 st.set_page_config(page_title="v13.5 終極選股引擎", layout="wide")
-st_autorefresh(interval=5000, key="global_sync")
+st_autorefresh(interval=3000, key="global_sync")
 
 # 同步雲端數據
 os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -174,7 +175,7 @@ if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
 
 db = json.load(open(LOCAL_STATE)) if os.path.exists(LOCAL_STATE) else {"last_slot":"", "list":[], "status":"idle"}
 now = now_taipei()
-SCHEDULE = ["09:00", "09:30", "10:30", "11:30", "12:30", "13:15", "01:30"]
+SCHEDULE = ["08:51", "09:30", "10:50", "11:50", "12:20", "13:15", "15:30"]
 
 # 時段匹配
 current_slot = ""
