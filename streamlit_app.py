@@ -7,7 +7,7 @@ from streamlit_autorefresh import st_autorefresh
 # 0. 環境診斷 (請務必檢查 Secrets)
 # ==============================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
-REPO_NAME = st.secrets.get("REPO_NAME")  # 必須是 "username/repo"
+REPO_NAME = st.secrets.get("GITHUB_REPO")  # 必須是 "username/repo"
 LOG_PATH = "app.log" # 建議先放在根目錄測試，避開 db/ 資料夾權限
 
 tz = timezone(timedelta(hours=8))
