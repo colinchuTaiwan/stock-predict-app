@@ -203,10 +203,12 @@ if brain.is_scanning:
         if brain.current_idx < len(universe):
             batch = universe[brain.current_idx : brain.current_idx + 15]
             with st.status(f"🚀 掃描中 {brain.current_idx}/{len(universe)}..."):
+                LogEngine.add_log(f"yf.download")
                 raw = yf.download(batch, period="300d", group_by='ticker', threads=True, progress=False)
                 
                 for code in batch:
                     df = raw[code] if len(batch) > 1 else raw
+                    LogEngine.add_log(f"analyze_stock_logic")
                     res = analyze_stock_logic(code, df)
                     if res: 
                         brain.temp_results.append(res)
