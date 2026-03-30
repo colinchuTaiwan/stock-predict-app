@@ -1,6 +1,6 @@
 {
-  "slot": "init",
-  "ts": 0,
-  "worker": "manual-init",
-  "status": "released"
+  "list": [],
+  "last_slot": "init",
+  "ts": 1711790000,
+  "status": "ready"
 }
