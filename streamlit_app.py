@@ -31,7 +31,6 @@ def get_worker_id(): return f"{socket.gethostname()}-{os.getpid()}"
 class GitHubEngine:
     @staticmethod
     def fetch_remote(path):
-        LogEngine.add_log(f"fetch_remote")
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         try:
