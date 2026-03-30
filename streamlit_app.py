@@ -184,7 +184,7 @@ if db.get("status") == "running" and not brain.is_scanning:
 
 # [Step 3] 排程觸發
 now = now_taipei()
-SCHEDULE = ["08:30", "09:30", "10:14", "11:30", "12:30", "13:15", "15:30"]
+SCHEDULE = ["08:30", "09:30", "10:15", "11:30", "12:30", "13:15", "15:30"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -268,7 +268,8 @@ with st.sidebar:
     st.header("⚙️ 系統資訊")
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
     st.write(f"腦袋掃描中: `{brain.is_scanning}`")
-    
+    if st.button("📝 測試 Log"): 
+        LogEngine.add_log("手動測試成功"    
     st.subheader("最新日誌")
     logs, _ = GitHubEngine.fetch_remote(LOG_PATH)
     if logs: st.text("\n".join(str(logs).splitlines()[-8:]))
