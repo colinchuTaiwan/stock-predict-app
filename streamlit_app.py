@@ -155,7 +155,7 @@ else:
 
 # 排程檢查
 now = now_taipei()
-SCHEDULE = ["08:59", "09:22", "10:50", "11:50", "12:20", "13:15", "15:30"]
+SCHEDULE = ["08:59", "09:49", "10:50", "11:50", "12:20", "13:15", "15:30"]
 current_slot = ""
 for t in SCHEDULE:
     slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
