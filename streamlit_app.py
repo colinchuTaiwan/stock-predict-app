@@ -7,15 +7,19 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
-# 0. 環境設定 (Secrets)
+# 0. 環境設定 (修正路徑權限)
 # ==============================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
 REPO_NAME = st.secrets.get("REPO_NAME")
 DB_PATH = "db/scan_results.json"
 LOCK_PATH = "db/scan.lock.json"
-LOG_PATH = "app.log"  # Log 存放位置
+LOG_PATH = "app.log"
 UNIVERSE_FILE = "db/taiwan_Full.json" 
-STORAGE_DIR = "/db"
+
+# 修正：直接使用當前目錄，避免 /tmp 權限問題
+STORAGE_DIR = "data_cache" 
+if not os.path.exists(STORAGE_DIR):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
 LOCAL_STATE = os.path.join(STORAGE_DIR, "scan_results.json")
 
 tz = timezone(timedelta(hours=8))
@@ -23,7 +27,7 @@ def now_taipei(): return datetime.now(tz)
 def get_worker_id(): return f"{socket.gethostname()}-{os.getpid()}"
 
 # ==============================
-# 1. GitHub API 引擎 & Log 模組
+# 1. GitHub API 引擎 (修正寫入邏輯)
 # ==============================
 class GitHubEngine:
     @staticmethod
@@ -34,11 +38,8 @@ class GitHubEngine:
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
-                # 判斷是 JSON 還是 純文字 Log
-                raw_content = base64.b64decode(data["content"]).decode("utf-8")
-                if path.endswith(".json"):
-                    return json.loads(raw_content), data["sha"]
-                return raw_content, data["sha"]
+                content = base64.b64decode(data["content"]).decode("utf-8")
+                return (json.loads(content) if path.endswith(".json") else content), data["sha"]
         except: pass
         return None, None
 
@@ -46,42 +47,98 @@ class GitHubEngine:
     def commit_file(path, content, message, sha=None):
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        
-        # 處理 dict 或 str
-        if isinstance(content, dict):
-            content_bytes = json.dumps(content, ensure_ascii=False).encode("utf-8")
+        # 處理內容格式
+        if isinstance(content, (dict, list)):
+            c_str = json.dumps(content, ensure_ascii=False)
         else:
-            content_bytes = content.encode("utf-8")
-            
-        payload = {"message": message, "content": base64.b64encode(content_bytes).decode("utf-8")}
-        if sha: payload["sha"] = sha
+            c_str = str(content)
+        
+        payload = {
+            "message": message,
+            "content": base64.b64encode(c_str.encode("utf-8")).decode("utf-8")
+        }
+        if sha: payload["sha"] = sha # 如果是更新，必須帶 sha；如果是新建，不帶 sha
+        
         res = requests.put(url, headers=headers, json=payload, timeout=15)
         return res.status_code in [200, 201]
-
-    @staticmethod
-    def delete_lock(sha):
-        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{LOCK_PATH}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        res = requests.delete(url, headers=headers, json={"message": "Release Lock", "sha": sha}, timeout=10)
-        return res.status_code == 200
 
 class LogEngine:
     @staticmethod
     def add_log(message):
-        timestamp = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
-        worker = get_worker_id()
-        new_entry = f"[{timestamp}] [{worker}] {message}\n"
-        
-        # 獲取遠端舊 Log
-        remote_content, sha = GitHubEngine.fetch_remote(LOG_PATH)
-        if remote_content is None: remote_content = ""
-        
-        # 只保留最近 200 行避免檔案過大
-        lines = remote_content.splitlines()
-        if len(lines) > 200: lines = lines[-200:]
-        updated_content = "\n".join(lines) + "\n" + new_entry
-        
-        GitHubEngine.commit_file(LOG_PATH, updated_content, f"Log: {message[:20]}", sha)
+        try:
+            ts = now_taipei().strftime("%Y-%m-%d %H:%M:%S")
+            new_line = f"[{ts}] {message}"
+            
+            # 獲取舊 Log 與 SHA
+            old_content, sha = GitHubEngine.fetch_remote(LOG_PATH)
+            
+            if old_content is None:
+                updated_content = f"=== Log Start ===\n{new_line}"
+            else:
+                lines = str(old_content).splitlines()
+                # 限制長度，只留最後 100 行避免 API 過載
+                updated_content = "\n".join(lines[-100:] + [new_line])
+            
+            success = GitHubEngine.commit_file(LOG_PATH, updated_content, "Update Log", sha)
+            return success
+        except:
+            return False
+
+# ==============================
+# 2. 策略與指標 (略，維持 v13.6)
+# ==============================
+# ... (此處保留 analyze_stock_logic 與 calc_indicators)
+
+# ==============================
+# 3. 分散式大腦
+# ==============================
+@st.cache_resource
+class DistributedBrain:
+    def __init__(self):
+        self.mu = threading.Lock()
+        self.is_scanning, self.current_idx, self.temp_results = False, 0, []
+
+brain = DistributedBrain()
+
+# ==============================
+# 4. 主流程 (修正排程與 Log 紀錄)
+# ==============================
+st.set_page_config(page_title="v13.7 穩定診斷版", layout="wide")
+st_autorefresh(interval=10000, key="global_sync") # 稍微拉長頻率，避免 GitHub API rate limit
+
+# 初始化資料
+if not os.path.exists(LOCAL_STATE):
+    with open(LOCAL_STATE, "w") as f: json.dump({"ts": 0, "list": []}, f)
+
+# 同步雲端
+remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
+with open(LOCAL_STATE, "r") as f: local_db = json.load(f)
+if remote_db and remote_db.get("ts", 0) > local_db.get("ts", 0):
+    with open(LOCAL_STATE, "w") as f: json.dump(remote_db, f)
+
+db = local_db
+now = now_taipei()
+SCHEDULE = ["08:59", "09:35", "10:50", "11:50", "12:20", "13:15", "15:30"]
+
+# 檢查排程並觸發
+current_slot = ""
+for t in SCHEDULE:
+    slot_dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+    if 0 <= (now - slot_dt).total_seconds() <= 600: # 10分鐘內視為有效時段
+        current_slot = f"{now.strftime('%m%d')}_{t}"
+        break
+
+# 執行自動鎖定與 Log
+if current_slot and db.get("last_slot") != current_slot and not brain.is_scanning:
+    # 嘗試取得 GitHub 鎖
+    rem_lock, l_sha = GitHubEngine.fetch_remote(LOCK_PATH)
+    if not rem_lock or (time.time() - rem_lock.get("ts", 0) > 900): # 鎖定超過15分則失效
+        new_l = {"slot": current_slot, "ts": time.time(), "worker": get_worker_id()}
+        if GitHubEngine.commit_file(LOCK_PATH, new_l, f"Lock:{current_slot}", l_sha):
+            brain.is_scanning = True
+            LogEngine.add_log(f"🚀 掃描啟動: {current_slot} | 排程: {SCHEDULE}")
+            st.rerun()
+
 
 # ==============================
 # 2. 指標與策略邏輯
@@ -235,7 +292,24 @@ if db.get("list"):
     st.dataframe(pd.DataFrame(db["list"]), use_container_width=True)
 else:
     st.info("💡 目前無符合趨勢之股票。")
+# Debug 工具欄
+with st.sidebar:
+    st.header("🛠️ 診斷面板")
+    if st.button("📝 測試寫入 Log"):
+        if LogEngine.add_log(f"手動測試: {now.strftime('%H:%M:%S')}"):
+            st.success("寫入成功！")
+        else:
+            st.error("寫入失敗，請檢查 Token 權限")
+    
+    st.subheader("最新日誌")
+    logs, _ = GitHubEngine.fetch_remote(LOG_PATH)
+    if logs:
+        st.text("\n".join(str(logs).splitlines()[-5:]))
 
+if db.get("list"):
+    st.write(f"最後更新時段: {db.get('last_slot')}")
+    st.dataframe(db["list"])
+    
 with st.expander("🛠️ 管理員工具 & 系統日誌"):
     col1, col2 = st.columns(2)
     with col1:
