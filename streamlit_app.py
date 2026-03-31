@@ -63,34 +63,86 @@ class GitHubEngine:
 # ==============================
 # 2. 選股邏輯 (增加安全性檢查)
 # ==============================
+def calc_indicators(df):
+    """計算所有必要的均線與乖離率"""
+    df = df.copy()
+    c = df['Close']
+    for w in [5, 10, 20, 60, 100, 200]:
+        df[f"ma{w}"] = c.rolling(w).mean()
+        # 計算乖離率供糾結判斷使用
+        df[f"ma{w}_b"] = (c - df[f"ma{w}"]) / df[f"ma{w}"]
+    return df
+
 def analyze_stock_logic(code, df):
     try:
-        # 檢查 DataFrame 是否合法且包含必要欄位
-        if df is None or df.empty or len(df) < 200: return None
-        if 'Close' not in df.columns: return None
+        # 1. 基礎檢查
+        if df is None or df.empty: return None
+        required_cols = ['Open', 'Close', 'High', 'Volume']
+        if not all(col in df.columns for col in required_cols): return None
         
-        c = df['Close']
-        ma = {w: c.rolling(w).mean().iloc[-1] for w in [5, 10, 20, 60]}
+        # 2. 計算指標 (至少需要 200 根 K 線)
+        df = df.dropna()
+        if len(df) < 210: return None
+        ind = calc_indicators(df)
         
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        # 確保最新一筆資料沒有空值
+        if ind.iloc[-1].isnull().any(): return None
+
+        # 3. 取得數值
+        last, prev = ind.iloc[-1], ind.iloc[-2]
         price = float(last['Close'])
         open_p = float(last['Open'])
-        vol = float(last['Volume']) / 1000
-        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
+        vol = float(last['Volume']) / 1000  # 換算為張數(假設單位是股)
         
+        pre_close = float(prev['Close'])
+        pre_high = float(prev['High'])
+        pre_vol = float(prev['Volume']) / 1000
+        
+        # 漲幅 (以當日開盤計)
         rk = (price - open_p) * 100 / open_p
         
-        # 策略過濾
-        if not (1.0 <= rk <= 8.0): return None
-        if price > 280 or vol < 150 or vol < mv20 * 1.1: return None
+        # 均線字典與成交量均線
+        ma_keys = [5, 10, 20, 60, 100, 200]
+        ma = {w: last[f"ma{w}"] for w in ma_keys}
+        pre_ma = {w: prev[f"ma{w}"] for w in ma_keys}
+        ma_b = {w: last.get(f"ma{w}_b", 0) for w in [20, 60, 100, 200]}
+        ma_d = {w: ma[w] - pre_ma[w] for w in ma_keys} # 均線斜率
+        mv20 = df['Volume'].rolling(20).mean().iloc[-1] / 1000
+
+        # 4. 基礎過濾條件 (1% < 漲幅 < 7%, 成交量 > 100張, 價格 < 200, 量增 1.5 倍)
+        if not (1.0 < rk < 7.0): return None
+        cond_basic = (price > pre_high and price > ma[5]) and \
+                     (mv20 > 100 and vol > 100) and \
+                     (price < 200) and (vol > pre_vol * 1.5)
+        if not cond_basic: return None
+
+        # 5. 突破判定 (前一根收盤價必須在某條均線之下)
+        is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
+        if not is_breakout: return None
+
+        # 6. 型態判定
+        signal = None
         
-        ma_list = [ma[5], ma[10], ma[20], ma[60]]
-        signal = ""
-        if ma[5] > ma[10] > ma[20] > ma[60]: signal = "均線多排"
-        elif (max(ma_list) / min(ma_list)) < 1.07: signal = "均線糾結"
+        # 多頭排列判斷 (5>20>60>100>200)
+        if ma[5] > ma[20] > ma[60] > ma[100] > ma[200]:
+            up_count = sum(1 for w in [5, 20, 60, 100, 200] if ma_d[w] > 0)
+            signal = {5: "五線多排", 4: "四線多排", 3: "三線多排", 2: "二線多排"}.get(up_count)
         
-        if signal and price > ma[5] and price > prev['High']:
+        # 糾結判斷 (若非多排則檢查是否糾結)
+        if not signal:
+            ma_list = [ma[w] for w in ma_keys]
+            if all(price > ma[w] for w in [20, 60, 100, 200]):
+                if (max(ma_list) / min(ma_list) < 1.08) and ma_b[200] < 0.1: 
+                    signal = "六線糾結"
+                elif (max(ma_list[:5]) / min(ma_list[:5]) < 1.08) and ma_b[100] < 0.15: 
+                    signal = "五線糾結"
+                elif (max(ma_list[:4]) / min(ma_list[:4]) < 1.08) and ma_b[60] < 0.15: 
+                    signal = "四線糾結"
+                elif (max(ma_list[:3]) / min(ma_list[:3]) < 1.08) and ma_b[20] < 0.15: 
+                    signal = "三線糾結"
+
+        # 7. 回傳結果
+        if signal:
             return {
                 "股票代號": code,
                 "價格": round(price, 2),
@@ -99,7 +151,8 @@ def analyze_stock_logic(code, df):
                 "型態": signal,
                 "時間": now_taipei().strftime("%H:%M")
             }
-    except Exception as e:
+            
+    except Exception:
         pass
     return None
 
@@ -126,7 +179,7 @@ brain = DistributedBrain()
 # ==============================
 # 4. 主流程
 # ==============================
-st.set_page_config(page_title="趨勢選股 v15.1", layout="wide")
+st.set_page_config(page_title="趨勢選股 v11.2", layout="wide")
 
 if not brain.is_scanning:
     st_autorefresh(interval=30000, key="refresh_safe") # 拉長到 30 秒更穩定
@@ -205,7 +258,8 @@ else:
 
 with st.sidebar:
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
-    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")    
+    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
+    st.write(f"目前選股時間: `{current_slot}`")   
     if st.button("🚨 強制釋放"):
         _, sha = GitHubEngine.fetch_remote(LOCK_PATH)
         GitHubEngine.delete_lock(sha)
