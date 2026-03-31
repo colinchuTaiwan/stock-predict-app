@@ -196,7 +196,7 @@ if brain.is_scanning:
             st.rerun()
 
 # --- UI 呈現 ---
-st.title("📊 趨勢選股系統 v15.1")
+st.title("📊 多頭趨勢選股實驗室 v11.2")
 if db.get("list"):
     st.subheader(f"📅 最新結果: {db.get('last_slot')}")
     st.dataframe(pd.DataFrame(db["list"]), use_container_width=True)
@@ -205,8 +205,18 @@ else:
 
 with st.sidebar:
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.write(f"預定排程: `{', '.join(SCHEDULE)}`")    
     st.write(f"目前槽位: `{current_slot}`")
     if st.button("🚨 強制釋放"):
         _, sha = GitHubEngine.fetch_remote(LOCK_PATH)
         GitHubEngine.delete_lock(sha)
         st.rerun()
+
+st.markdown("---")
+with st.expander("⚠️ 投資免責聲明 (Disclaimer)"):
+    st.caption("""
+    1. **本工具僅供技術分析實驗與研究參考**，不構成任何投資建議、買賣邀約或承諾。
+    2. 系統顯示之資料來源為第三方 API，資料可能存在延遲、錯誤或缺漏，使用者應自行核實。
+    3. 過去的績效不代表未來獲利，投資一定有風險，股票投資有賺有賠，申購前應詳閱公開說明書並審慎評估。
+    4. 使用者須對其投資決策負完全責任，本程式開發者不負擔任何法律責任或損失賠償。
+    """)
