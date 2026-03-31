@@ -135,7 +135,7 @@ remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
 db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
 
 now = now_taipei()
-SCHEDULE = ["09:05", "09:35", "10:35", "11:35", "12:35", "13:25", "17:58", "18:10", "20:00"] 
+SCHEDULE = ["08:25", "09:25", "10:25", "11:25", "12:25", "13:15", "15:00", "18:30"] 
 current_slot = ""
 for t in SCHEDULE:
     dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
@@ -206,7 +206,6 @@ else:
 with st.sidebar:
     st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
     st.write(f"預定排程: `{', '.join(SCHEDULE)}`")    
-    st.write(f"目前槽位: `{current_slot}`")
     if st.button("🚨 強制釋放"):
         _, sha = GitHubEngine.fetch_remote(LOCK_PATH)
         GitHubEngine.delete_lock(sha)
