@@ -131,14 +131,14 @@ def analyze_stock_logic(code, df):
         # 糾結判斷 (若非多排則檢查是否糾結)
         if not signal:
             ma_list = [ma[w] for w in ma_keys]
-            if all(price > ma[w] for w in [20, 60, 100, 200]):
-                if (max(ma_list) / min(ma_list) < 1.08) and ma_b[200] < 0.1: 
+            if all(price > ma[w] for w in [20, 60, 100, 200]) and ma_d[20] > 0:
+                if (max(ma_list) / min(ma_list) < 1.08) and ma_b[200] < 0.12: 
                     signal = "六線糾結"
-                elif (max(ma_list[:5]) / min(ma_list[:5]) < 1.08) and ma_b[100] < 0.15: 
+                elif (max(ma_list[:5]) / min(ma_list[:5]) < 1.08) and ma_b[100] < 0.12: 
                     signal = "五線糾結"
-                elif (max(ma_list[:4]) / min(ma_list[:4]) < 1.08) and ma_b[60] < 0.15: 
+                elif (max(ma_list[:4]) / min(ma_list[:4]) < 1.08) and ma_b[60] < 0.12: 
                     signal = "四線糾結"
-                elif (max(ma_list[:3]) / min(ma_list[:3]) < 1.08) and ma_b[20] < 0.15: 
+                elif (max(ma_list[:3]) / min(ma_list[:3]) < 1.08) and ma_b[20] < 0.12: 
                     signal = "三線糾結"
 
         # 7. 回傳結果
@@ -188,7 +188,7 @@ remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
 db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
 
 now = now_taipei()
-SCHEDULE = ["08:25", "09:25", "10:25", "11:25", "12:25", "13:15", "15:00", "17:50"] 
+SCHEDULE = ["08:25", "09:25", "10:25", "11:25", "12:25", "13:15", "15:00", "18:30","23:45"] 
 current_slot = ""
 for t in SCHEDULE:
     dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
