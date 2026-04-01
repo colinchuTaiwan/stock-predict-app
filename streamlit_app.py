@@ -257,8 +257,11 @@ else:
     st.info("等待排程自動觸發...")
 
 with st.sidebar:
-    st.write(f"伺服器時間: `{now.strftime('%H:%M:%S')}`")
+    st.subheader("⏰ 系統即時時間")
+    st.title(f"{now.strftime('%H:%M:%S')}")
     st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
+    if brain.is_scanning:
+        st.warning("🔄 掃描引擎運行中...")
     #st.write(f"目前選股時間: `{current_slot}`")   
 
     
