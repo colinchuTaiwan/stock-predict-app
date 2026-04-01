@@ -261,10 +261,6 @@ with st.sidebar:
     st.write(f"預定排程: `{', '.join(SCHEDULE)}`")
     st.write(f"目前選股時間: `{current_slot}`")   
     
-    #if st.button("🚨 強制釋放"):
-    #    _, sha = GitHubEngine.fetch_remote(LOCK_PATH)
-    #    GitHubEngine.delete_lock(sha)
-    #    st.rerun()
     
 
 st.markdown("---")
