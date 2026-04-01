@@ -182,7 +182,7 @@ brain = DistributedBrain()
 st.set_page_config(page_title="趨勢選股 v11.2", layout="wide")
 
 if not brain.is_scanning:
-    st_autorefresh(interval=600ㄢ00, key="refresh_safe") # 拉長到 600 秒更穩定
+    st_autorefresh(interval=600000, key="refresh_safe") # 拉長到 600 秒更穩定
 
 remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
 db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
