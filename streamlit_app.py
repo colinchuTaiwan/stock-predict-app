@@ -197,7 +197,7 @@ remote_db, _ = GitHubEngine.fetch_remote(DB_PATH)
 db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in remote_db) else {"ts": 0, "list": [], "last_slot": "none"}
 
 now = now_taipei()
-SCHEDULE = ["08:25", "09:25", "10:25", "11:25", "12:25", "13:15","15:30","18:30","23:00"] 
+SCHEDULE = ["00:00","01:00","03:00","08:30", "09:30", "10:30", "11:30", "12:30", "13:30","15:00","20:00","23:00"] 
 current_slot = ""
 for t in SCHEDULE:
     dt = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
