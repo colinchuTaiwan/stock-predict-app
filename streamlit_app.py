@@ -161,7 +161,7 @@ def analyze_stock_logic(code, df):
 
         signal = None
 
-        if (ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and ma_b[20] < 0.07 and ma_b[60]<0.2:
+        if (ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and ma_b[20] < 0.07 and ma_b[60]<0.18:
             up_count = sum(1 for w in [5, 10, 20, 60, 100, 200] if ma_d[w] > 0)
             signal = {
                 6: "六線多排",
