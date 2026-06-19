@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import json, os, time, requests, base64, socket
 from datetime import datetime, timedelta, timezone
-from scipy.signal import argrelextrema
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
@@ -109,6 +108,16 @@ def track_visitor(site_id: str) -> int:
 # ==============================
 ORDER = 10  # 波峰/波谷偵測左右寬度
 
+def argrelextrema(arr, comparator, order=ORDER):
+    """純 numpy 實作，取代 scipy.signal.argrelextrema，不需安裝 scipy。"""
+    n = len(arr)
+    result = []
+    for i in range(order, n - order):
+        window = arr[i - order : i + order + 1]
+        if comparator(arr[i], window).all():
+            result.append(i)
+    return (np.array(result, dtype=int),)
+
 def _flat(df, col):
     return df[col].values.flatten().astype(float)
 
@@ -194,16 +203,19 @@ def is_close_above_prev_high(df):
     except (TypeError, ValueError):
         return False
 
-def is_ma20_bias_ok(df, threshold=0.07):
-    """MA20 乖離率 < threshold"""
+def is_ma20_bias_ok(df, threshold_20=0.07, threshold_60=0.20):
+    """MA20 乖離率 < 7%，且 MA60 乖離率 < 20%"""
     last = df.iloc[-1]
     try:
-        close, ma20 = float(last["Close"]), float(last["MA20"])
+        close = float(last["Close"])
+        ma20  = float(last["MA20"])
+        ma60  = float(last["MA60"])
     except (TypeError, ValueError):
         return False
-    if np.isnan(ma20) or ma20 == 0:
+    if np.isnan(ma20) or ma20 == 0 or np.isnan(ma60) or ma60 == 0:
         return False
-    return (close - ma20) / ma20 < threshold
+    return (close - ma20) / ma20 < threshold_20 and \
+           (close - ma60) / ma60 < threshold_60
 
 def analyze_stock_logic(code, df):
     """
@@ -273,6 +285,7 @@ def analyze_stock_logic(code, df):
             "漲幅":     f"{round(rk, 2)}%",
             "成交量":   int(vol),
             "MA20乖離": f"{round((price - mas[20]) / mas[20] * 100, 2)}%",
+            "MA60乖離": f"{round((price - mas[60]) / mas[60] * 100, 2)}%",
             "型態":     signal,
             "時間":     now_taipei().strftime("%H:%M"),
         }
@@ -316,7 +329,7 @@ db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in 
 
 now = now_taipei()
 SCHEDULE = ["00:00", "01:00", "03:00", "08:30", "09:30", "10:30",
-            "11:30", "12:30", "13:30", "15:00", "19:00", "23:00"]
+            "11:30", "12:30", "13:30", "15:00", "20:00", "23:00"]
 
 current_slot = ""
 for t in SCHEDULE:
