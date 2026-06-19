@@ -3,4 +3,5 @@ streamlit-autorefresh
 yfinance 
 pandas 
 numpy
+scipy
 firebase-admin
