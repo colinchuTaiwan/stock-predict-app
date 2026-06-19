@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import json, os, time, requests, base64, socket
 from datetime import datetime, timedelta, timezone
+from scipy.signal import argrelextrema
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
@@ -91,11 +92,6 @@ class GitHubEngine:
 # 2. 訪客計數器（Firebase 版）
 # ==============================
 def track_visitor(site_id: str) -> int:
-    """
-    使用 Firebase Transaction 確保並發安全。
-    session_state["counted"] 旗標確保同一個瀏覽器 session
-    不管 autorefresh 觸發幾次 rerun，只有第一次進入才會 +1。
-    """
     init_firebase()
     ref = firebase_db.reference(f"visitor_counts/{site_id}")
     def increment(current): return (current or 0) + 1
@@ -109,93 +105,180 @@ def track_visitor(site_id: str) -> int:
         return 0
 
 # ==============================
-# 3. 選股邏輯
+# 3. 選股邏輯（對齊 taiwan_stock_screener.py）
 # ==============================
-def calc_indicators(df):
-    """計算所有必要的均線與乖離率"""
+ORDER = 10  # 波峰/波谷偵測左右寬度
+
+def _flat(df, col):
+    return df[col].values.flatten().astype(float)
+
+def calc_ma(df):
     df = df.copy()
-    c = df['Close']
+    c = df["Close"].squeeze()
     for w in [5, 10, 20, 60, 100, 200]:
-        df[f"ma{w}"] = c.rolling(w).mean()
-        df[f"ma{w}_b"] = (c - df[f"ma{w}"]) / df[f"ma{w}"]
+        df[f"MA{w}"] = c.rolling(w).mean()
     return df
 
-def analyze_stock_logic(code, df):
+def find_pivots(df):
+    highs = argrelextrema(_flat(df, "High"), np.greater_equal, order=ORDER)[0]
+    lows  = argrelextrema(_flat(df, "Low"),  np.less_equal,    order=ORDER)[0]
+    return highs, lows
+
+def is_higher_highs_higher_lows(df, n_pivots=2):
+    """頭頭高、底底高（波峰用 High，波谷用 Low）"""
+    highs_idx, lows_idx = find_pivots(df)
+    if len(highs_idx) < n_pivots or len(lows_idx) < n_pivots:
+        return False
+    rh = _flat(df, "High")[highs_idx[-n_pivots:]]
+    rl = _flat(df, "Low")[lows_idx[-n_pivots:]]
+    hh = all(rh[i] > rh[i-1] for i in range(1, n_pivots))
+    hl = all(rl[i] > rl[i-1] for i in range(1, n_pivots))
+    return hh and hl
+
+def is_above_ma20(df):
+    last = df.iloc[-1]
+    return float(last["Close"]) > float(last["MA20"])
+
+def is_ma_aligned(df):
+    """四線多排：MA20 > MA60 > MA100 > MA200"""
+    last = df.iloc[-1]
     try:
-        if df is None or df.empty: return None
-        required_cols = ['Open', 'Close', 'High', 'Volume']
-        if not all(col in df.columns for col in required_cols): return None
+        mas = [float(last[f"MA{n}"]) for n in [20, 60, 100, 200]]
+    except (TypeError, ValueError):
+        return False
+    if any(np.isnan(v) for v in mas):
+        return False
+    return all(mas[i] > mas[i+1] for i in range(len(mas)-1))
 
+def is_ma_breakout(df, price_cap=200.0):
+    """
+    均線突破：
+    - 前一日收盤 < MA5 OR MA10 OR MA20
+    - 當日收盤站上 MA5 AND MA10 AND MA20
+    - 收盤 < price_cap
+    """
+    if len(df) < 2:
+        return False
+    try:
+        prev = df.iloc[-2]
+        last = df.iloc[-1]
+        pc, lc = float(prev["Close"]), float(last["Close"])
+        pm5,  pm10,  pm20  = float(prev["MA5"]),  float(prev["MA10"]),  float(prev["MA20"])
+        lm5,  lm10,  lm20  = float(last["MA5"]),  float(last["MA10"]),  float(last["MA20"])
+    except (TypeError, ValueError):
+        return False
+    if any(np.isnan(v) for v in [pm5, pm10, pm20, lm5, lm10, lm20]):
+        return False
+    prev_below_any = (pc < pm5) or (pc < pm10) or (pc < pm20)
+    last_above_all = (lc > lm5) and (lc > lm10) and (lc > lm20)
+    return prev_below_any and last_above_all and (lc < price_cap)
+
+def is_red_candle_limited(df, max_gain=0.07):
+    """紅K且漲幅 < max_gain（排除漲停追高）"""
+    try:
+        last_open  = float(df["Open"].values.flatten()[-1])
+        last_close = float(df["Close"].values.flatten()[-1])
+    except (TypeError, ValueError):
+        return False
+    if last_open <= 0:
+        return False
+    gain = (last_close - last_open) / last_open
+    return 0 < gain < max_gain
+
+def is_close_above_prev_high(df):
+    """當日收盤 > 前一日最高價（實體突破）"""
+    if len(df) < 2:
+        return False
+    try:
+        return _flat(df, "Close")[-1] > _flat(df, "High")[-2]
+    except (TypeError, ValueError):
+        return False
+
+def is_ma20_bias_ok(df, threshold=0.07):
+    """MA20 乖離率 < threshold"""
+    last = df.iloc[-1]
+    try:
+        close, ma20 = float(last["Close"]), float(last["MA20"])
+    except (TypeError, ValueError):
+        return False
+    if np.isnan(ma20) or ma20 == 0:
+        return False
+    return (close - ma20) / ma20 < threshold
+
+def analyze_stock_logic(code, df):
+    """
+    完整選股條件（對齊 taiwan_stock_screener.py）：
+    1. 頭頭高、底底高
+    2. 站上 MA20
+    3. 四線多排：MA20 > MA60 > MA100 > MA200
+    4. 均線突破：前一日 < MA5/10/20 其一，當日站上 MA5+MA10+MA20，收盤<200
+    5. 紅K：(收盤-開盤)/開盤 介於 0~7%
+    6. 收盤過前高：當日收盤 > 前一日最高價
+    7. MA20 乖離 < 7%
+    """
+    try:
+        if df is None or df.empty:
+            return None
+        required = ["Open", "High", "Low", "Close", "Volume"]
+        if not all(c in df.columns for c in required):
+            return None
         df = df.dropna()
-        if len(df) < 210: return None
-        ind = calc_indicators(df)
+        if len(df) < 210:
+            return None
 
-        if ind.iloc[-1].isnull().any(): return None
+        df = calc_ma(df)
+        if df.iloc[-1][["MA5","MA10","MA20","MA60","MA100","MA200"]].isnull().any():
+            return None
 
-        last, prev = ind.iloc[-1], ind.iloc[-2]
-        price  = float(last['Close'])
-        open_p = float(last['Open'])
-        vol    = float(last['Volume']) / 1000
+        last = df.iloc[-1]
+        price  = float(last["Close"])
+        open_p = float(last["Open"])
+        vol    = float(last["Volume"]) / 1000
+        mv20   = df["Volume"].rolling(20).mean().iloc[-1] / 1000
+        prev_vol = float(df.iloc[-2]["Volume"]) / 1000
 
-        pre_close = float(prev['Close'])
-        pre_high  = float(prev['High'])
-        pre_vol   = float(prev['Volume']) / 1000
+        # ── 七個條件 ─────────────────────────────────────────────────────────
+        hh_hl           = is_higher_highs_higher_lows(df)
+        above20         = is_above_ma20(df)
+        aligned         = is_ma_aligned(df)
+        ma_break        = is_ma_breakout(df)
+        red_candle      = is_red_candle_limited(df)
+        close_over_high = is_close_above_prev_high(df)
+        bias_ok         = is_ma20_bias_ok(df)
+
+        if not (hh_hl and above20 and aligned and ma_break and
+                red_candle and close_over_high and bias_ok):
+            return None
+
+        # 成交量過濾：均量 > 100 張，當日量 > 前日量 1.5 倍
+        if mv20 < 100 or vol < prev_vol * 1.5:
+            return None
 
         rk = (price - open_p) * 100 / open_p
 
-        ma_keys = [5, 10, 20, 60, 100, 200]
-        ma     = {w: last[f"ma{w}"]  for w in ma_keys}
-        pre_ma = {w: prev[f"ma{w}"]  for w in ma_keys}
-        ma_b   = {w: last.get(f"ma{w}_b", 0) for w in [20, 60, 100, 200]}
-        ma_d   = {w: ma[w] - pre_ma[w] for w in ma_keys}
-        mv20   = df['Volume'].rolling(20).mean().iloc[-1] / 1000
+        # 判斷均線型態
+        mas = {w: float(last[f"MA{w}"]) for w in [5, 10, 20, 60, 100, 200]}
+        prev_mas = {w: float(df.iloc[-2][f"MA{w}"]) for w in [5, 10, 20, 60, 100, 200]}
+        up_count = sum(1 for w in [5, 10, 20, 60, 100, 200] if mas[w] > prev_mas[w])
 
-        if not (1.0 < rk < 7.0): return None
-        cond_basic = (price > pre_high and price > ma[5]) and \
-                     (mv20 > 100 and vol > 100) and \
-                     (price < 200) and (vol > pre_vol * 1.5)
-        if not cond_basic: return None
+        if mas[5] > mas[10] > mas[20] > mas[60] > mas[100] > mas[200]:
+            signal = {6:"六線多排", 5:"五線多排", 4:"四線多排",
+                      3:"三線多排", 2:"二線多排"}.get(up_count, "多排")
+        else:
+            signal = f"四線多排+突破（{up_count}線向上）"
 
-        is_breakout = any(pre_close < pre_ma[w] for w in [5, 10, 20, 60])
-        if not is_breakout: return None
-
-        signal = None
-
-        if (ma[5] > ma[10] > ma[20] > ma[60] > ma[100] > ma[200]) and ma_b[20] < 0.07 and ma_b[60]<0.18:
-            up_count = sum(1 for w in [5, 10, 20, 60, 100, 200] if ma_d[w] > 0)
-            signal = {
-                6: "六線多排",
-                5: "五線多排",
-                4: "四線多排",
-                3: "三線多排",
-                2: "二線多排"
-            }.get(up_count, "均線多排")
-
-        if not signal:
-            ma_list = [ma[w] for w in ma_keys]
-            if all(price > ma[w] for w in [20, 60, 100, 200]) and ma_d[20] > 0:
-                if (max(ma_list) / min(ma_list) < 1.05) and ma_b[200] < 0.07:
-                    signal = "六線糾結"
-                elif (max(ma_list[:5]) / min(ma_list[:5]) < 1.05) and ma_b[100] < 0.07:
-                    signal = "五線糾結"
-                elif (max(ma_list[:4]) / min(ma_list[:4]) < 1.05) and ma_b[60] < 0.07:
-                    signal = "四線糾結"
-                elif (max(ma_list[:3]) / min(ma_list[:3]) < 1.05) and ma_b[20] < 0.07:
-                    signal = "三線糾結"
-
-        if signal:
-            return {
-                "股票代號": code,
-                "價格":     round(price, 2),
-                "漲幅":     f"{round(rk, 2)}%",
-                "成交量":   int(vol),
-                "型態":     signal,
-                "時間":     now_taipei().strftime("%H:%M")
-            }
+        return {
+            "股票代號": code,
+            "價格":     round(price, 2),
+            "漲幅":     f"{round(rk, 2)}%",
+            "成交量":   int(vol),
+            "MA20乖離": f"{round((price - mas[20]) / mas[20] * 100, 2)}%",
+            "型態":     signal,
+            "時間":     now_taipei().strftime("%H:%M"),
+        }
 
     except Exception:
-        pass
-    return None
+        return None
 
 # ==============================
 # 4. 狀態大腦
@@ -203,7 +286,7 @@ def analyze_stock_logic(code, df):
 @st.cache_resource
 class DistributedBrain:
     def __init__(self):
-        self.is_scanning  = False
+        self.is_scanning   = False
         self.last_try_time = 0
 
     def try_lock(self, slot):
@@ -222,7 +305,6 @@ brain = DistributedBrain()
 # ==============================
 st.set_page_config(page_title="趨勢選股 v11.2", layout="wide")
 
-# 訪客計數：每個 session 只計一次，autorefresh rerun 不重複累加
 visitor_count = track_visitor(SITE_ID)
 
 if not brain.is_scanning:
@@ -256,7 +338,8 @@ if brain.is_scanning:
 
         st.write(f"準備下載 {len(stocks)} 檔股票...")
         try:
-            data = yf.download(stocks, period="260d", group_by='ticker', threads=False, progress=False)
+            data = yf.download(stocks, period="260d", group_by="ticker",
+                               threads=False, progress=False, auto_adjust=True)
 
             results = []
             p_bar = st.progress(0)
@@ -264,17 +347,24 @@ if brain.is_scanning:
             for i, code in enumerate(stocks):
                 try:
                     if len(stocks) > 1:
-                        if code in data.columns.levels[0]:
-                            df = data[code]
+                        # 相容新舊版 yfinance MultiIndex
+                        if isinstance(data.columns, pd.MultiIndex):
+                            col_l0 = data.columns.get_level_values(0).unique().tolist()
+                            if any(".TW" in str(v) for v in col_l0):
+                                df = data[code].copy() if code in data.columns.get_level_values(0) else None
+                            else:
+                                df = data.xs(code, axis=1, level=1).copy() if code in data.columns.get_level_values(1) else None
                         else:
-                            continue
+                            df = data
                     else:
                         df = data
 
-                    res = analyze_stock_logic(code, df)
-                    if res: results.append(res)
-                except:
-                    continue
+                    if df is not None:
+                        res = analyze_stock_logic(code, df)
+                        if res:
+                            results.append(res)
+                except Exception:
+                    pass
                 p_bar.progress((i + 1) / len(stocks))
 
             st.write("同步至 GitHub...")
