@@ -214,8 +214,9 @@ def is_ma20_bias_ok(df, threshold_20=0.07, threshold_60=0.20):
         return False
     if np.isnan(ma20) or ma20 == 0 or np.isnan(ma60) or ma60 == 0:
         return False
-    return (close - ma20) / ma20 < threshold_20 and \
-           (close - ma60) / ma60 < threshold_60
+    ma20_b = (close - ma20) / ma20 < threshold_20
+    #ma60_b = (close - ma60) / ma60 < threshold_60
+    return ma20_b
 
 def analyze_stock_logic(code, df):
     """
@@ -328,8 +329,8 @@ db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in 
     else {"ts": 0, "list": [], "last_slot": "none"}
 
 now = now_taipei()
-SCHEDULE = ["00:00", "01:00", "03:00", "08:30", "09:30", "10:30",
-            "11:30", "12:30", "13:30", "15:00", "20:00", "23:50"]
+SCHEDULE = ["00:05", "02:00", "06:00", "08:30", "09:30", "10:30",
+            "11:30", "12:30", "13:15", "15:00", "20:00", "23:00"]
 
 current_slot = ""
 for t in SCHEDULE:
