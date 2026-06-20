@@ -3,7 +3,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import json, os, time, requests, base64, socket
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 from streamlit_autorefresh import st_autorefresh
 
 # ==============================
@@ -104,19 +106,29 @@ def track_visitor(site_id: str) -> int:
         return 0
 
 # ==============================
-# 3. 選股邏輯（對齊 taiwan_stock_screener.py）
+# 3. 選股邏輯（遮罩三點分型版）
 # ==============================
-ORDER = 10  # 波峰/波谷偵測左右寬度
 
-def argrelextrema(arr, comparator, order=ORDER):
-    """純 numpy 實作，取代 scipy.signal.argrelextrema，不需安裝 scipy。"""
-    n = len(arr)
-    result = []
-    for i in range(order, n - order):
-        window = arr[i - order : i + order + 1]
-        if comparator(arr[i], window).all():
-            result.append(i)
-    return (np.array(result, dtype=int),)
+MASK_SIZE = 13
+CENTER    = MASK_SIZE // 2   # = 6
+
+@dataclass
+class FractalTop:
+    index_i: int
+    high:    float
+    low:     float
+    close:   float   # 用於頭頭高（頂2收盤 > 頂1收盤）
+    k0_rel:  int
+    k2_rel:  int
+
+@dataclass
+class FractalBottom:
+    index_i: int
+    low:     float
+    high:    float
+    close:   float   # 用於底底高（底2收盤 > 底1收盤）
+    k0_rel:  int
+    k2_rel:  int
 
 def _flat(df, col):
     return df[col].values.flatten().astype(float)
@@ -128,22 +140,195 @@ def calc_ma(df):
         df[f"MA{w}"] = c.rolling(w).mean()
     return df
 
-def find_pivots(df):
-    highs = argrelextrema(_flat(df, "High"), np.greater_equal, order=ORDER)[0]
-    lows  = argrelextrema(_flat(df, "Low"),  np.less_equal,    order=ORDER)[0]
-    return highs, lows
+# ── 遮罩頂分型 ────────────────────────────────────────────────────────────────
+def find_confirmed_tops(df) -> List[FractalTop]:
+    """
+    遮罩大小 13，k1 位於索引 6（CENTER）。
+    候選條件：
+      ① High[6] 是遮罩13根中的唯一最高價
+      ② MA5[6] > MA10[6] > MA20[6] > MA60[6]
+    三點確認：
+      k0：從索引 5 往左到 0，第一根 Low[j] < Low[6]
+      k2：從索引 7 往右到 12，第一根 Low[j] < Low[6]
+    """
+    high  = _flat(df, "High")
+    low   = _flat(df, "Low")
+    close = _flat(df, "Close")
+    ma5   = _flat(df, "MA5")
+    ma10  = _flat(df, "MA10")
+    ma20  = _flat(df, "MA20")
+    ma60  = _flat(df, "MA60")
+    n     = len(high)
 
-def is_higher_highs_higher_lows(df, n_pivots=2):
-    """頭頭高、底底高（波峰用 High，波谷用 Low）"""
-    highs_idx, lows_idx = find_pivots(df)
-    if len(highs_idx) < n_pivots or len(lows_idx) < n_pivots:
-        return False
-    rh = _flat(df, "High")[highs_idx[-n_pivots:]]
-    rl = _flat(df, "Low")[lows_idx[-n_pivots:]]
-    hh = all(rh[i] > rh[i-1] for i in range(1, n_pivots))
-    hl = all(rl[i] > rl[i-1] for i in range(1, n_pivots))
-    return hh and hl
+    tops: List[FractalTop] = []
 
+    for abs_k1 in range(CENTER, n - CENTER):
+        s, e = abs_k1 - CENTER, abs_k1 + CENTER + 1
+        m_high  = high [s:e]
+        m_low   = low  [s:e]
+        m_close = close[s:e]
+        m_ma5   = ma5  [s:e]
+        m_ma10  = ma10 [s:e]
+        m_ma20  = ma20 [s:e]
+        m_ma60  = ma60 [s:e]
+
+        k1_high  = m_high [CENTER]
+        k1_low   = m_low  [CENTER]
+        k1_close = m_close[CENTER]
+
+        if np.isnan(k1_high):
+            continue
+        if k1_high != np.max(m_high):
+            continue
+        if np.sum(m_high == k1_high) > 1:
+            continue
+
+        v5, v10, v20, v60 = m_ma5[CENTER], m_ma10[CENTER], m_ma20[CENTER], m_ma60[CENTER]
+        if any(np.isnan(v) for v in [v5, v10, v20, v60]):
+            continue
+        if not (v5 > v10 > v20 > v60):
+            continue
+
+        k0_rel: Optional[int] = None
+        for j in range(CENTER - 1, -1, -1):
+            if m_low[j] < k1_low:
+                k0_rel = j
+                break
+        if k0_rel is None:
+            continue
+
+        k2_rel: Optional[int] = None
+        for j in range(CENTER + 1, MASK_SIZE):
+            if m_low[j] < k1_low:
+                k2_rel = j
+                break
+        if k2_rel is None:
+            continue
+
+        tops.append(FractalTop(
+            index_i=abs_k1, high=k1_high, low=k1_low,
+            close=k1_close, k0_rel=k0_rel, k2_rel=k2_rel,
+        ))
+
+    return tops
+
+# ── 遮罩底分型 ────────────────────────────────────────────────────────────────
+def find_confirmed_bottoms(df, tops: List[FractalTop]) -> List[FractalBottom]:
+    """
+    前提：必須先有頂分型。
+    候選條件：
+      ① 遮罩左側（0~5）所有 High 不超過最近頂分型的 Low
+      ② Low[6] 是遮罩13根中的唯一最低價
+      ③ Close[6] < MA5[6]
+    三點確認：
+      k0：從索引 5 往左到 0，第一根 High[j] > High[6]
+      k2：從索引 7 往右到 12，第一根 High[j] > High[6]
+    """
+    if not tops:
+        return []
+
+    high  = _flat(df, "High")
+    low   = _flat(df, "Low")
+    close = _flat(df, "Close")
+    ma5   = _flat(df, "MA5")
+    n     = len(low)
+
+    bottoms: List[FractalBottom] = []
+
+    for abs_k1 in range(CENTER, n - CENTER):
+        s, e = abs_k1 - CENTER, abs_k1 + CENTER + 1
+        m_high  = high [s:e]
+        m_low   = low  [s:e]
+        m_close = close[s:e]
+        m_ma5   = ma5  [s:e]
+
+        k1_low  = m_low [CENTER]
+        k1_high = m_high[CENTER]
+
+        prev_tops = [t for t in tops if t.index_i < abs_k1]
+        if not prev_tops:
+            continue
+        nearest_top = prev_tops[-1]
+
+        left_highs = m_high[0:CENTER]
+        if np.any(left_highs > nearest_top.low):
+            continue
+
+        if np.isnan(k1_low):
+            continue
+        if k1_low != np.min(m_low):
+            continue
+        if np.sum(m_low == k1_low) > 1:
+            continue
+
+        if np.isnan(m_ma5[CENTER]) or m_close[CENTER] >= m_ma5[CENTER]:
+            continue
+
+        k0_rel: Optional[int] = None
+        for j in range(CENTER - 1, -1, -1):
+            if m_high[j] > k1_high:
+                k0_rel = j
+                break
+        if k0_rel is None:
+            continue
+
+        k2_rel: Optional[int] = None
+        for j in range(CENTER + 1, MASK_SIZE):
+            if m_high[j] > k1_high:
+                k2_rel = j
+                break
+        if k2_rel is None:
+            continue
+
+        bottoms.append(FractalBottom(
+            index_i=abs_k1, low=k1_low, high=k1_high,
+            close=m_close[CENTER], k0_rel=k0_rel, k2_rel=k2_rel,
+        ))
+
+    return bottoms
+
+# ── 頭頭高、底底高（收盤價版） ────────────────────────────────────────────────
+def check_higher_highs_higher_lows(df):
+    """
+    回傳 (passed, 頂1收盤, 頂2收盤, 底1收盤, 底2收盤)
+    頭頭高：top[-1].close > top[-2].close
+    底底高：bot[-1].close > bot[-2].close
+    結構驗證：top[-2].index < bot[-1].index < top[-1].index
+    """
+    NONE5 = (False, None, None, None, None)
+
+    tops = find_confirmed_tops(df)
+    if len(tops) < 2:
+        return NONE5
+
+    bottoms = find_confirmed_bottoms(df, tops)
+    if len(bottoms) < 2:
+        return NONE5
+
+    last_top = tops[-1]
+    prev_top = tops[-2]
+    last_bot = bottoms[-1]
+    prev_bot = bottoms[-2]
+
+    if not (last_top.close > prev_top.close):
+        return NONE5
+    if not (last_bot.close > prev_bot.close):
+        return NONE5
+    if not (prev_top.index_i < last_bot.index_i < last_top.index_i):
+        return NONE5
+
+    return (
+        True,
+        round(prev_top.close, 2),
+        round(last_top.close, 2),
+        round(prev_bot.close, 2),
+        round(last_bot.close, 2),
+    )
+
+def is_higher_highs_higher_lows(df) -> bool:
+    return check_higher_highs_higher_lows(df)[0]
+
+# ── 其餘技術條件（維持原版）──────────────────────────────────────────────────
 def is_above_ma20(df):
     last = df.iloc[-1]
     return float(last["Close"]) > float(last["MA20"])
@@ -195,7 +380,7 @@ def is_red_candle_limited(df, max_gain=0.07):
     return 0 < gain < max_gain
 
 def is_close_above_prev_high(df):
-    """當日收盤 > 前一日最高價（實體突破）"""
+    """當日收盤 > 前一日最高價"""
     if len(df) < 2:
         return False
     try:
@@ -203,31 +388,30 @@ def is_close_above_prev_high(df):
     except (TypeError, ValueError):
         return False
 
-def is_ma20_bias_ok(df, threshold_20=0.07, threshold_60=0.20):
-    """MA20 乖離率 < 7%，且 MA60 乖離率 < 20%"""
+def is_ma20_bias_ok(df, threshold_20=0.07):
+    """MA20 乖離率 < 7%"""
     last = df.iloc[-1]
     try:
         close = float(last["Close"])
         ma20  = float(last["MA20"])
-        ma60  = float(last["MA60"])
     except (TypeError, ValueError):
         return False
-    if np.isnan(ma20) or ma20 == 0 or np.isnan(ma60) or ma60 == 0:
+    if np.isnan(ma20) or ma20 == 0:
         return False
-    ma20_b = (close - ma20) / ma20 < threshold_20
-    #ma60_b = (close - ma60) / ma60 < threshold_60
-    return ma20_b
+    return (close - ma20) / ma20 < threshold_20
 
+# ── 完整選股邏輯 ──────────────────────────────────────────────────────────────
 def analyze_stock_logic(code, df):
     """
-    完整選股條件（對齊 taiwan_stock_screener.py）：
-    1. 頭頭高、底底高
+    七個條件（遮罩分型版）：
+    1. 頭頭高、底底高（遮罩三點確認，比較收盤價）
     2. 站上 MA20
     3. 四線多排：MA20 > MA60 > MA100 > MA200
-    4. 均線突破：前一日 < MA5/10/20 其一，當日站上 MA5+MA10+MA20，收盤<200
-    5. 紅K：(收盤-開盤)/開盤 介於 0~7%
+    4. 均線突破：前一日 < MA5/10/20 其一，當日站上三條，收盤<200
+    5. 紅K：漲幅 0~7%
     6. 收盤過前高：當日收盤 > 前一日最高價
     7. MA20 乖離 < 7%
+    額外過濾：均量 > 100 張，當日量 > 前日量 1.5 倍
     """
     try:
         if df is None or df.empty:
@@ -243,15 +427,15 @@ def analyze_stock_logic(code, df):
         if df.iloc[-1][["MA5","MA10","MA20","MA60","MA100","MA200"]].isnull().any():
             return None
 
-        last = df.iloc[-1]
+        last   = df.iloc[-1]
         price  = float(last["Close"])
         open_p = float(last["Open"])
         vol    = float(last["Volume"]) / 1000
         mv20   = df["Volume"].rolling(20).mean().iloc[-1] / 1000
         prev_vol = float(df.iloc[-2]["Volume"]) / 1000
 
-        # ── 七個條件 ─────────────────────────────────────────────────────────
-        hh_hl           = is_higher_highs_higher_lows(df)
+        # ── 七個條件 ──────────────────────────────────────────────────────────
+        hh_hl, 頂1, 頂2, 底1, 底2 = check_higher_highs_higher_lows(df)
         above20         = is_above_ma20(df)
         aligned         = is_ma_aligned(df)
         ma_break        = is_ma_breakout(df)
@@ -269,8 +453,7 @@ def analyze_stock_logic(code, df):
 
         rk = (price - open_p) * 100 / open_p
 
-        # 判斷均線型態
-        mas = {w: float(last[f"MA{w}"]) for w in [5, 10, 20, 60, 100, 200]}
+        mas      = {w: float(last[f"MA{w}"]) for w in [5, 10, 20, 60, 100, 200]}
         prev_mas = {w: float(df.iloc[-2][f"MA{w}"]) for w in [5, 10, 20, 60, 100, 200]}
         up_count = sum(1 for w in [5, 10, 20, 60, 100, 200] if mas[w] > prev_mas[w])
 
@@ -285,6 +468,10 @@ def analyze_stock_logic(code, df):
             "價格":     round(price, 2),
             "漲幅":     f"{round(rk, 2)}%",
             "成交量":   int(vol),
+            "頂1收盤":  頂1,
+            "頂2收盤":  頂2,
+            "底1收盤":  底1,
+            "底2收盤":  底2,
             "MA20乖離": f"{round((price - mas[20]) / mas[20] * 100, 2)}%",
             "MA60乖離": f"{round((price - mas[60]) / mas[60] * 100, 2)}%",
             "型態":     signal,
@@ -361,7 +548,6 @@ if brain.is_scanning:
             for i, code in enumerate(stocks):
                 try:
                     if len(stocks) > 1:
-                        # 相容新舊版 yfinance MultiIndex
                         if isinstance(data.columns, pd.MultiIndex):
                             col_l0 = data.columns.get_level_values(0).unique().tolist()
                             if any(".TW" in str(v) for v in col_l0):
