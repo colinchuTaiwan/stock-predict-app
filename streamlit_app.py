@@ -328,6 +328,41 @@ def check_higher_highs_higher_lows(df):
 def is_higher_highs_higher_lows(df) -> bool:
     return check_higher_highs_higher_lows(df)[0]
 
+# ── 頭頭低、底底高（收斂三角） ───────────────────────────────────────────────
+def check_lower_highs_higher_lows(df):
+    """
+    收斂三角（對稱三角整理）：
+      頭頭低：top[-1].close < top[-2].close  ← 壓力線下傾
+      底底高：bot[-1].close > bot[-2].close  ← 支撐線上傾
+      結構驗證：top[-2].index < bot[-1].index < top[-1].index
+    回傳 (passed, 頂1收盤, 頂2收盤, 底1收盤, 底2收盤)
+    """
+    NONE5 = (False, None, None, None, None)
+
+    tops = find_confirmed_tops(df)
+    if len(tops) < 2:
+        return NONE5
+
+    bottoms = find_confirmed_bottoms(df, tops)
+    if len(bottoms) < 2:
+        return NONE5
+
+    prev_top = tops[-2]
+    last_top = tops[-1]
+    prev_bot = bottoms[-2]
+    last_bot = bottoms[-1]
+
+    if not (last_top.close < prev_top.close):   # 頭頭低
+        return NONE5
+    if not (last_bot.close > prev_bot.close):   # 底底高
+        return NONE5
+    if not (prev_top.index_i < last_bot.index_i < last_top.index_i):
+        return NONE5
+
+    return (True,
+            round(prev_top.close, 2), round(last_top.close, 2),
+            round(prev_bot.close, 2), round(last_bot.close, 2))
+
 # ── 其餘技術條件（維持原版）──────────────────────────────────────────────────
 def is_above_ma20(df):
     last = df.iloc[-1]
@@ -434,8 +469,24 @@ def analyze_stock_logic(code, df):
         mv20   = df["Volume"].rolling(20).mean().iloc[-1] / 1000
         prev_vol = float(df.iloc[-2]["Volume"]) / 1000
 
-        # ── 七個條件 ──────────────────────────────────────────────────────────
+        # ── 條件①：形態判斷（多頭趨勢 / 收斂三角，任一通過）────────────────
         hh_hl, 頂1, 頂2, 底1, 底2 = check_higher_highs_higher_lows(df)
+        lh_hl, t1_lh, t2_lh, b1_lh, b2_lh = check_lower_highs_higher_lows(df)
+
+        # 任一通過即採用；優先顯示多頭趨勢的分型數值
+        pattern_pass = hh_hl or lh_hl
+        if not hh_hl and lh_hl:
+            頂1, 頂2, 底1, 底2 = t1_lh, t2_lh, b1_lh, b2_lh
+
+        # 形態標籤
+        if hh_hl and lh_hl:
+            pattern_label = "多頭+三角"
+        elif hh_hl:
+            pattern_label = "多頭趨勢"
+        elif lh_hl:
+            pattern_label = "收斂三角"
+        else:
+            pattern_label = ""
         above20         = is_above_ma20(df)
         aligned         = is_ma_aligned(df)
         ma_break        = is_ma_breakout(df)
@@ -443,7 +494,7 @@ def analyze_stock_logic(code, df):
         close_over_high = is_close_above_prev_high(df)
         bias_ok         = is_ma20_bias_ok(df)
 
-        if not (hh_hl and above20 and aligned and ma_break and
+        if not (pattern_pass and above20 and aligned and ma_break and
                 red_candle and close_over_high and bias_ok):
             return None
 
@@ -458,10 +509,12 @@ def analyze_stock_logic(code, df):
         up_count = sum(1 for w in [5, 10, 20, 60, 100, 200] if mas[w] > prev_mas[w])
 
         if mas[5] > mas[10] > mas[20] > mas[60] > mas[100] > mas[200]:
-            signal = {6:"六線多排", 5:"五線多排", 4:"四線多排",
+            ma_signal = {6:"六線多排", 5:"五線多排", 4:"四線多排",
                       3:"三線多排", 2:"二線多排"}.get(up_count, "多排")
         else:
-            signal = f"四線多排+突破（{up_count}線向上）"
+            ma_signal = f"四線多排+突破（{up_count}線向上）"
+
+        signal = f"{pattern_label}｜{ma_signal}" if pattern_label else ma_signal
 
         return {
             "股票代號": code,
@@ -517,7 +570,7 @@ db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in 
 
 now = now_taipei()
 SCHEDULE = ["00:05", "02:00", "06:00", "08:30", "09:30", "10:30",
-            "11:58", "12:30", "13:15", "15:00", "20:00", "23:00"]
+            "11:30", "12:18", "13:15", "15:00", "20:00", "23:00"]
 
 current_slot = ""
 for t in SCHEDULE:
