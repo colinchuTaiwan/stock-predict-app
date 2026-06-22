@@ -517,7 +517,7 @@ db = remote_db if (remote_db and isinstance(remote_db, dict) and "last_slot" in 
 
 now = now_taipei()
 SCHEDULE = ["00:05", "02:00", "06:00", "08:30", "09:30", "10:30",
-            "11:30", "12:30", "13:15", "15:00", "20:00", "23:00"]
+            "11:58", "12:30", "13:15", "15:00", "20:00", "23:00"]
 
 current_slot = ""
 for t in SCHEDULE:
