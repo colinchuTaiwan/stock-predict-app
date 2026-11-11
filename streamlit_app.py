@@ -413,7 +413,7 @@ def is_ma_aligned(df):
 def is_ma_breakout(df, price_cap=200.0):
     """
     均線突破：
-    - 前一日收盤 < MA5 OR MA10 OR MA20
+    - 前一日收盤 < MA5 or MA10 or MA20,改成MA5 and MA10
     - 當日收盤站上 MA5 AND MA10 AND MA20
     - 收盤 < price_cap
     """
@@ -429,7 +429,7 @@ def is_ma_breakout(df, price_cap=200.0):
         return False
     if any(np.isnan(v) for v in [pm5, pm10, pm20, lm5, lm10, lm20]):
         return False
-    prev_below_any = (pc < pm5) or (pc < pm10) or (pc < pm20)
+    prev_below_any = (pc < pm5) and (pc < pm10)
     last_above_all = (lc > lm5) and (lc > lm10) and (lc > lm20)
     return prev_below_any and last_above_all and (lc < price_cap)
 
